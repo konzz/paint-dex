@@ -24,6 +24,7 @@ import {
   parseImport,
   saveRemoteState,
   serializeExport,
+  stateFingerprint,
   subscribeInventory,
   type SavedState,
 } from './lib/storage'
@@ -51,9 +52,13 @@ export default function App() {
   const [filter, setFilter] = useState<FilterId>('all')
   const [flash, setFlash] = useState<string | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
-  const skipRemoteRef = useRef(true)
+  const stateRef = useRef(state)
+  const dirtyRef = useRef(false)
+  const lastSyncedFpRef = useRef(stateFingerprint(loadCachedState()))
   const saveTimerRef = useRef<number | null>(null)
   const owned = useMemo(() => new Set(state.owned), [state.owned])
+
+  stateRef.current = state
 
   useEffect(() => {
     let cancelled = false
@@ -61,15 +66,14 @@ export default function App() {
       try {
         const remote = await hydrateState()
         if (cancelled) return
+        lastSyncedFpRef.current = stateFingerprint(remote)
+        dirtyRef.current = false
         setState(remote)
         setSyncError(null)
       } catch {
         if (!cancelled) setSyncError('No se pudo cargar el inventario en la nube')
       } finally {
-        if (!cancelled) {
-          skipRemoteRef.current = false
-          setReady(true)
-        }
+        if (!cancelled) setReady(true)
       }
     })()
     return () => {
@@ -80,27 +84,77 @@ export default function App() {
   useEffect(() => {
     if (!ready) return
     return subscribeInventory((next) => {
-      skipRemoteRef.current = true
+      const fp = stateFingerprint(next)
+      if (fp === lastSyncedFpRef.current) return
+      if (fp === stateFingerprint(stateRef.current)) {
+        lastSyncedFpRef.current = fp
+        return
+      }
+      // Don't clobber in-progress local edits with a remote echo/race.
+      if (dirtyRef.current) return
+      lastSyncedFpRef.current = fp
       setState(next)
-      queueMicrotask(() => {
-        skipRemoteRef.current = false
-      })
     })
   }, [ready])
 
   useEffect(() => {
     cacheState(state)
-    if (!ready || skipRemoteRef.current) return
+    if (!ready) return
+
+    const fp = stateFingerprint(state)
+    if (fp === lastSyncedFpRef.current) {
+      dirtyRef.current = false
+      return
+    }
+
+    dirtyRef.current = true
     if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current)
     saveTimerRef.current = window.setTimeout(() => {
-      void saveRemoteState(state).catch(() => {
-        setSyncError('No se pudo guardar en la nube')
-      })
-    }, 350)
+      const toSave = stateRef.current
+      const saveFp = stateFingerprint(toSave)
+      if (saveFp === lastSyncedFpRef.current) {
+        dirtyRef.current = false
+        return
+      }
+      void saveRemoteState(toSave)
+        .then(() => {
+          lastSyncedFpRef.current = saveFp
+          if (stateFingerprint(stateRef.current) === saveFp) {
+            dirtyRef.current = false
+          }
+          setSyncError(null)
+        })
+        .catch(() => {
+          setSyncError('No se pudo guardar en la nube')
+        })
+    }, 500)
+
     return () => {
       if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current)
     }
   }, [state, ready])
+
+  useEffect(() => {
+    function flush() {
+      if (!dirtyRef.current) return
+      const toSave = stateRef.current
+      const saveFp = stateFingerprint(toSave)
+      if (saveFp === lastSyncedFpRef.current) return
+      void saveRemoteState(toSave).then(() => {
+        lastSyncedFpRef.current = saveFp
+        dirtyRef.current = false
+      })
+    }
+    function onVisibility() {
+      if (document.visibilityState === 'hidden') flush()
+    }
+    window.addEventListener('pagehide', flush)
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => {
+      window.removeEventListener('pagehide', flush)
+      document.removeEventListener('visibilitychange', onVisibility)
+    }
+  }, [])
 
   useEffect(() => {
     if (!flash) return

@@ -107,6 +107,13 @@ export async function hydrateState(): Promise<SavedState> {
   return remote
 }
 
+export function stateFingerprint(state: SavedState): string {
+  return JSON.stringify({
+    preferredBrand: state.preferredBrand,
+    owned: [...state.owned].sort(),
+  })
+}
+
 export function serializeExport(state: SavedState) {
   return JSON.stringify(state, null, 2)
 }
