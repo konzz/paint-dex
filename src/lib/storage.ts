@@ -2,6 +2,7 @@ import type { BrandId } from '../data/paints'
 import { INVENTORY_ID, supabase } from './supabase'
 
 const CACHE_KEY = 'mini-paint-tracker:v1'
+const SAVE_DEBOUNCE_MS = 450
 
 export type SavedState = {
   v: 1
@@ -47,6 +48,13 @@ function rowToState(row: InventoryRow): SavedState {
   })
 }
 
+export function stateFingerprint(state: SavedState): string {
+  return JSON.stringify({
+    preferredBrand: state.preferredBrand,
+    owned: [...state.owned].sort(),
+  })
+}
+
 export function loadCachedState(): SavedState {
   try {
     const raw = localStorage.getItem(CACHE_KEY)
@@ -74,12 +82,14 @@ export async function fetchRemoteState(): Promise<SavedState | null> {
 }
 
 export async function saveRemoteState(state: SavedState): Promise<void> {
-  const { error } = await supabase.from('paint_inventory').upsert({
-    id: INVENTORY_ID,
-    owned: state.owned,
-    preferred_brand: state.preferredBrand,
-    updated_at: new Date().toISOString(),
-  })
+  const { error } = await supabase
+    .from('paint_inventory')
+    .update({
+      owned: state.owned,
+      preferred_brand: state.preferredBrand,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', INVENTORY_ID)
   if (error) throw error
 }
 
@@ -89,12 +99,16 @@ export async function hydrateState(): Promise<SavedState> {
   const remote = await fetchRemoteState()
 
   if (!remote) {
-    if (cached.owned.length > 0) {
-      await saveRemoteState(cached)
-      return cached
-    }
-    await saveRemoteState(DEFAULT_STATE)
-    return { ...DEFAULT_STATE }
+    const seed = cached.owned.length > 0 ? cached : DEFAULT_STATE
+    const { error } = await supabase.from('paint_inventory').upsert({
+      id: INVENTORY_ID,
+      owned: seed.owned,
+      preferred_brand: seed.preferredBrand,
+      updated_at: new Date().toISOString(),
+    })
+    if (error) throw error
+    cacheState(seed)
+    return seed
   }
 
   if (remote.owned.length === 0 && cached.owned.length > 0) {
@@ -105,13 +119,6 @@ export async function hydrateState(): Promise<SavedState> {
 
   cacheState(remote)
   return remote
-}
-
-export function stateFingerprint(state: SavedState): string {
-  return JSON.stringify({
-    preferredBrand: state.preferredBrand,
-    owned: [...state.owned].sort(),
-  })
 }
 
 export function serializeExport(state: SavedState) {
@@ -126,28 +133,89 @@ export function parseImport(text: string): SavedState {
   return normalizeState(parsed)
 }
 
-export function subscribeInventory(onChange: (state: SavedState) => void) {
-  const channel = supabase
-    .channel('paint_inventory_shared')
-    .on(
-      'postgres_changes',
-      {
-        event: '*',
-        schema: 'public',
-        table: 'paint_inventory',
-        filter: `id=eq.${INVENTORY_ID}`,
-      },
-      (payload) => {
-        const row = (payload.new ?? payload.old) as InventoryRow | undefined
-        if (!row || !('owned' in row)) return
-        const next = rowToState(row)
-        cacheState(next)
-        onChange(next)
-      },
-    )
-    .subscribe()
+type SaveHandlers = {
+  onError?: (message: string) => void
+  onSuccess?: () => void
+}
 
-  return () => {
-    void supabase.removeChannel(channel)
+/** Coalesced remote saver: at most one timer + one in-flight request. */
+export function createInventorySaver(handlers: SaveHandlers = {}) {
+  let lastSyncedFp = ''
+  let pending: SavedState | null = null
+  let timer: number | null = null
+  let inFlight = false
+
+  function noteSynced(state: SavedState) {
+    lastSyncedFp = stateFingerprint(state)
+    pending = null
   }
+
+  function isSynced(state: SavedState) {
+    return stateFingerprint(state) === lastSyncedFp
+  }
+
+  async function flush() {
+    timer = null
+    if (inFlight) return
+
+    const toSave = pending
+    if (!toSave) return
+
+    const fp = stateFingerprint(toSave)
+    if (fp === lastSyncedFp) {
+      pending = null
+      return
+    }
+
+    pending = null
+    inFlight = true
+    try {
+      await saveRemoteState(toSave)
+      lastSyncedFp = fp
+      handlers.onSuccess?.()
+    } catch {
+      // Keep pending so a later edit/flush can retry the latest state.
+      if (!pending) pending = toSave
+      handlers.onError?.('No se pudo guardar en la nube')
+    } finally {
+      inFlight = false
+      if (pending && stateFingerprint(pending) !== lastSyncedFp) {
+        timer = window.setTimeout(() => {
+          void flush()
+        }, SAVE_DEBOUNCE_MS)
+      }
+    }
+  }
+
+  function schedule(state: SavedState) {
+    const fp = stateFingerprint(state)
+    if (fp === lastSyncedFp) {
+      pending = null
+      return
+    }
+    pending = state
+    if (timer != null) window.clearTimeout(timer)
+    timer = window.setTimeout(() => {
+      void flush()
+    }, SAVE_DEBOUNCE_MS)
+  }
+
+  function flushNow(state?: SavedState) {
+    if (state) {
+      const fp = stateFingerprint(state)
+      if (fp !== lastSyncedFp) pending = state
+    }
+    if (timer != null) {
+      window.clearTimeout(timer)
+      timer = null
+    }
+    void flush()
+  }
+
+  function dispose() {
+    if (timer != null) window.clearTimeout(timer)
+    timer = null
+  }
+
+  return { noteSynced, isSynced, schedule, flushNow, dispose }
 }

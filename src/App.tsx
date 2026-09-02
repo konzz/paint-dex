@@ -19,13 +19,13 @@ import {
 } from './data/paints'
 import {
   cacheState,
+  createInventorySaver,
+  fetchRemoteState,
   hydrateState,
   loadCachedState,
   parseImport,
-  saveRemoteState,
   serializeExport,
   stateFingerprint,
-  subscribeInventory,
   type SavedState,
 } from './lib/storage'
 
@@ -53,21 +53,24 @@ export default function App() {
   const [flash, setFlash] = useState<string | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const stateRef = useRef(state)
-  const dirtyRef = useRef(false)
-  const lastSyncedFpRef = useRef(stateFingerprint(loadCachedState()))
-  const saveTimerRef = useRef<number | null>(null)
+  const saverRef = useRef<ReturnType<typeof createInventorySaver> | null>(null)
   const owned = useMemo(() => new Set(state.owned), [state.owned])
 
   stateRef.current = state
 
   useEffect(() => {
+    const saver = createInventorySaver({
+      onError: (message) => setSyncError(message),
+      onSuccess: () => setSyncError(null),
+    })
+    saverRef.current = saver
+
     let cancelled = false
     ;(async () => {
       try {
         const remote = await hydrateState()
         if (cancelled) return
-        lastSyncedFpRef.current = stateFingerprint(remote)
-        dirtyRef.current = false
+        saver.noteSynced(remote)
         setState(remote)
         setSyncError(null)
       } catch {
@@ -76,85 +79,50 @@ export default function App() {
         if (!cancelled) setReady(true)
       }
     })()
-    return () => {
-      cancelled = true
-    }
-  }, [])
 
-  useEffect(() => {
-    if (!ready) return
-    return subscribeInventory((next) => {
-      const fp = stateFingerprint(next)
-      if (fp === lastSyncedFpRef.current) return
-      if (fp === stateFingerprint(stateRef.current)) {
-        lastSyncedFpRef.current = fp
-        return
-      }
-      // Don't clobber in-progress local edits with a remote echo/race.
-      if (dirtyRef.current) return
-      lastSyncedFpRef.current = fp
-      setState(next)
-    })
-  }, [ready])
-
-  useEffect(() => {
-    cacheState(state)
-    if (!ready) return
-
-    const fp = stateFingerprint(state)
-    if (fp === lastSyncedFpRef.current) {
-      dirtyRef.current = false
-      return
-    }
-
-    dirtyRef.current = true
-    if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current)
-    saveTimerRef.current = window.setTimeout(() => {
-      const toSave = stateRef.current
-      const saveFp = stateFingerprint(toSave)
-      if (saveFp === lastSyncedFpRef.current) {
-        dirtyRef.current = false
-        return
-      }
-      void saveRemoteState(toSave)
-        .then(() => {
-          lastSyncedFpRef.current = saveFp
-          if (stateFingerprint(stateRef.current) === saveFp) {
-            dirtyRef.current = false
-          }
-          setSyncError(null)
-        })
-        .catch(() => {
-          setSyncError('No se pudo guardar en la nube')
-        })
-    }, 500)
-
-    return () => {
-      if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current)
-    }
-  }, [state, ready])
-
-  useEffect(() => {
-    function flush() {
-      if (!dirtyRef.current) return
-      const toSave = stateRef.current
-      const saveFp = stateFingerprint(toSave)
-      if (saveFp === lastSyncedFpRef.current) return
-      void saveRemoteState(toSave).then(() => {
-        lastSyncedFpRef.current = saveFp
-        dirtyRef.current = false
-      })
+    function onHide() {
+      saver.flushNow(stateRef.current)
     }
     function onVisibility() {
-      if (document.visibilityState === 'hidden') flush()
+      if (document.visibilityState === 'hidden') onHide()
     }
-    window.addEventListener('pagehide', flush)
+    window.addEventListener('pagehide', onHide)
     document.addEventListener('visibilitychange', onVisibility)
+
     return () => {
-      window.removeEventListener('pagehide', flush)
+      cancelled = true
+      window.removeEventListener('pagehide', onHide)
       document.removeEventListener('visibilitychange', onVisibility)
+      saver.flushNow(stateRef.current)
+      saver.dispose()
+      saverRef.current = null
     }
   }, [])
+
+  // Soft pull from other devices — never tied to local setState, so it can't loop.
+  useEffect(() => {
+    if (!ready) return
+    const id = window.setInterval(() => {
+      const saver = saverRef.current
+      if (!saver || !saver.isSynced(stateRef.current)) return
+      void fetchRemoteState()
+        .then((remote) => {
+          if (!remote || !saverRef.current) return
+          if (!saverRef.current.isSynced(stateRef.current)) return
+          if (stateFingerprint(remote) === stateFingerprint(stateRef.current)) {
+            saverRef.current.noteSynced(remote)
+            return
+          }
+          saverRef.current.noteSynced(remote)
+          cacheState(remote)
+          setState(remote)
+        })
+        .catch(() => {
+          /* ignore background poll errors */
+        })
+    }, 15000)
+    return () => window.clearInterval(id)
+  }, [ready])
 
   useEffect(() => {
     if (!flash) return
@@ -186,6 +154,8 @@ export default function App() {
 
   function persist(next: SavedState) {
     setState(next)
+    cacheState(next)
+    saverRef.current?.schedule(next)
   }
 
   function toggleBrand(paint: Paint, brand: BrandId) {
