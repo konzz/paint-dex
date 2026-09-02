@@ -17,7 +17,16 @@ import {
   type BrandId,
   type Paint,
 } from './data/paints'
-import { loadState, parseImport, saveState, serializeExport, type SavedState } from './lib/storage'
+import {
+  cacheState,
+  hydrateState,
+  loadCachedState,
+  parseImport,
+  saveRemoteState,
+  serializeExport,
+  subscribeInventory,
+  type SavedState,
+} from './lib/storage'
 
 type FilterId = 'all' | 'missing' | 'owned'
 
@@ -35,16 +44,63 @@ function shoppingName(paint: Paint, preferred: BrandId) {
 }
 
 export default function App() {
-  const [state, setState] = useState<SavedState>(() => loadState())
+  const [state, setState] = useState<SavedState>(() => loadCachedState())
+  const [ready, setReady] = useState(false)
+  const [syncError, setSyncError] = useState<string | null>(null)
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState<FilterId>('all')
   const [flash, setFlash] = useState<string | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
+  const skipRemoteRef = useRef(true)
+  const saveTimerRef = useRef<number | null>(null)
   const owned = useMemo(() => new Set(state.owned), [state.owned])
 
   useEffect(() => {
-    saveState(state)
-  }, [state])
+    let cancelled = false
+    ;(async () => {
+      try {
+        const remote = await hydrateState()
+        if (cancelled) return
+        setState(remote)
+        setSyncError(null)
+      } catch {
+        if (!cancelled) setSyncError('No se pudo cargar el inventario en la nube')
+      } finally {
+        if (!cancelled) {
+          skipRemoteRef.current = false
+          setReady(true)
+        }
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!ready) return
+    return subscribeInventory((next) => {
+      skipRemoteRef.current = true
+      setState(next)
+      queueMicrotask(() => {
+        skipRemoteRef.current = false
+      })
+    })
+  }, [ready])
+
+  useEffect(() => {
+    cacheState(state)
+    if (!ready || skipRemoteRef.current) return
+    if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current)
+    saveTimerRef.current = window.setTimeout(() => {
+      void saveRemoteState(state).catch(() => {
+        setSyncError('No se pudo guardar en la nube')
+      })
+    }, 350)
+    return () => {
+      if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current)
+    }
+  }, [state, ready])
 
   useEffect(() => {
     if (!flash) return
@@ -139,7 +195,7 @@ export default function App() {
             </h1>
             <p className="mt-3 max-w-xl text-sm leading-relaxed text-muted">
               Lista de compra y equivalencias. Marca el bote que tengas — Citadel, Vallejo,
-              AK o Two Thin Coats — y se guarda en este navegador.
+              AK o Two Thin Coats — y se sincroniza en la nube (inventario compartido).
             </p>
           </div>
           <Stats owned={ownedCount} total={PAINTS.length} percent={percent} missing={missingCount} />
@@ -166,6 +222,12 @@ export default function App() {
             event.target.value = ''
           }}
         />
+
+        {syncError ? (
+          <p className="mb-4 rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-200">
+            {syncError}
+          </p>
+        ) : null}
 
         {flash ? (
           <p className="mb-4 rounded-lg border border-brass/40 bg-brass/10 px-3 py-2 text-sm text-brass">

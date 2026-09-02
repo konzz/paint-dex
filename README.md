@@ -9,9 +9,11 @@ Inventario rápido para miniaturas: 23 colores con equivalencias entre **Two Thi
 3. Filtra por **Me faltan** cuando vayas a comprar.
 4. Elige la marca de la tienda en *Si voy a comprar, muéstrame* para ver los nombres de esa gama.
 
-Los datos viven en `localStorage` de este navegador. **Exportar** descarga un JSON; **Importar** lo restaura en otro dispositivo.
+Los datos viven en **Supabase** (inventario compartido). El navegador guarda una copia en caché; **Exportar** / **Importar** siguen disponibles como respaldo.
 
 ## Desarrollo local
+
+Copia `.env.example` a `.env.local` y rellena URL + publishable key del proyecto Supabase.
 
 ```bash
 npm install
