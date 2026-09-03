@@ -1035,18 +1035,20 @@ function PaintTable({
   catalogActions: CatalogActions
 }) {
   return (
-    <div className="overflow-hidden rounded-2xl border border-line bg-panel">
-      <table className="w-full border-collapse text-left text-sm">
+    <div className="rounded-2xl border border-line bg-panel">
+      <table className="w-full table-fixed border-collapse text-left text-sm">
         <thead className="bg-panel-2 text-[11px] tracking-wider text-muted uppercase">
           <tr>
-            <th className="px-4 py-3 font-medium">Color</th>
+            <th className="w-[18%] rounded-tl-2xl px-4 py-3 font-medium">Color</th>
             {BRANDS.map((brand) => (
               <th key={brand.id} className="px-3 py-3 font-medium">
                 {brand.label}
               </th>
             ))}
-            {paletteAction ? <th className="px-3 py-3 font-medium">Paleta</th> : null}
-            {catalogActions ? <th className="px-3 py-3 font-medium">Catálogo</th> : null}
+            {paletteAction ? <th className="w-20 px-3 py-3 font-medium">Paleta</th> : null}
+            {catalogActions ? (
+              <th className="w-20 rounded-tr-2xl px-3 py-3 font-medium">Catálogo</th>
+            ) : null}
           </tr>
         </thead>
         <tbody>
@@ -1057,11 +1059,11 @@ function PaintTable({
                 key={paint.id}
                 className={`border-t border-line ${got ? 'bg-owned/10' : 'hover:bg-white/5'}`}
               >
-                <td className="px-4 py-3">
+                <td className="min-w-0 px-4 py-3">
                   <RowIdentity paint={paint} owned={got} onToggle={() => onToggleRow(paint)} />
                 </td>
                 {BRANDS.map((brand) => (
-                  <td key={brand.id} className="px-3 py-2 align-middle">
+                  <td key={brand.id} className="min-w-0 px-3 py-2 align-middle">
                     <BrandCell
                       paint={paint}
                       brand={brand.id}
@@ -1221,7 +1223,7 @@ function RowIdentity({
   onToggle: () => void
 }) {
   return (
-    <div className="flex items-center gap-3">
+    <div className="flex min-w-0 items-center gap-3">
       <button
         type="button"
         onClick={onToggle}
@@ -1244,7 +1246,7 @@ function RowIdentity({
         ) : null}
       </button>
       <div className="min-w-0">
-        <div className="truncate font-medium text-parchment">{paint.original}</div>
+        <HoverName name={paint.original} className="font-medium text-parchment" />
         <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[11px] text-muted">
           <span>{KIND_LABEL[paint.kind]}</span>
           {paint.metallic ? <span>· Metálico</span> : null}
@@ -1299,7 +1301,7 @@ function BrandCell({
       type="button"
       onClick={onToggle}
       aria-pressed={checked}
-      className={`flex w-full min-h-12 items-center gap-2 rounded-xl border px-3 py-2 text-left transition ${
+      className={`flex w-full min-w-0 min-h-12 items-center gap-2 rounded-xl border px-3 py-2 text-left transition ${
         checked
           ? 'border-owned bg-owned/15 text-parchment'
           : 'border-line bg-panel-2/60 hover:border-muted'
@@ -1312,13 +1314,27 @@ function BrandCell({
       >
         {checked ? <Check className="size-3.5" /> : null}
       </span>
-      <span className="min-w-0">
+      <span className="min-w-0 flex-1">
         {compact ? (
           <span className="block text-[10px] tracking-wide text-muted uppercase">{labelFor(brand)}</span>
         ) : null}
-        <span className="block truncate text-sm">{name}</span>
+        <HoverName name={name} className="text-sm" />
       </span>
     </button>
+  )
+}
+
+function HoverName({ name, className = '' }: { name: string; className?: string }) {
+  return (
+    <span className="group/name relative block min-w-0">
+      <span className={`block truncate ${className}`}>{name}</span>
+      <span
+        role="tooltip"
+        className="pointer-events-none absolute bottom-full left-1/2 z-30 mb-2 hidden max-w-72 min-w-max -translate-x-1/2 rounded-lg border border-line bg-desk px-2.5 py-1.5 text-xs leading-snug break-words whitespace-normal text-parchment shadow-xl group-hover/name:block"
+      >
+        {name}
+      </span>
+    </span>
   )
 }
 
