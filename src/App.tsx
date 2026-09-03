@@ -526,7 +526,7 @@ function PaletteBar({
           <input
             value={draft}
             onChange={(event) => onDraft(event.target.value)}
-            placeholder="Nueva paleta (ej. Death Guard)…"
+            placeholder="Nueva paleta (ej. Pallid Hands)…"
             className="min-w-0 flex-1 rounded-lg border border-line bg-panel-2 px-3 py-2 text-sm text-parchment outline-none placeholder:text-muted focus:border-brass"
           />
           <button
@@ -657,6 +657,19 @@ function Toolbar({
   )
 }
 
+const PASTE_EXAMPLE = `{
+  "v": 2,
+  "owned": ["wraithbone::citadel", "leadbelcher::any"],
+  "preferredBrand": "citadel",
+  "palettes": [
+    {
+      "id": "pal_example",
+      "name": "Pallid Hands",
+      "paintIds": ["wraithbone", "leadbelcher", "guilliman-flesh"]
+    }
+  ]
+}`
+
 function TransferModal({
   mode,
   text,
@@ -702,10 +715,28 @@ function TransferModal({
           value={text}
           readOnly={mode === 'copy'}
           onChange={(event) => onText(event.target.value)}
-          rows={12}
-          className="w-full resize-y rounded-xl border border-line bg-panel-2 px-3 py-2 font-mono text-xs text-parchment outline-none focus:border-brass"
+          rows={10}
+          placeholder={mode === 'paste' ? PASTE_EXAMPLE : undefined}
+          className="w-full resize-y rounded-xl border border-line bg-panel-2 px-3 py-2 font-mono text-xs text-parchment outline-none placeholder:text-muted/70 focus:border-brass"
           spellCheck={false}
         />
+        {mode === 'paste' ? (
+          <div className="mt-3 rounded-xl border border-line bg-panel-2/80 p-3">
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <p className="text-xs font-medium tracking-wide text-muted uppercase">Ejemplo mínimo</p>
+              <button
+                type="button"
+                onClick={() => onText(PASTE_EXAMPLE)}
+                className="rounded-md border border-brass/40 px-2 py-1 text-xs text-brass hover:bg-brass/15"
+              >
+                Usar ejemplo
+              </button>
+            </div>
+            <pre className="overflow-x-auto font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-muted">
+              {PASTE_EXAMPLE}
+            </pre>
+          </div>
+        ) : null}
         <div className="mt-3 flex justify-end gap-2">
           <button
             type="button"

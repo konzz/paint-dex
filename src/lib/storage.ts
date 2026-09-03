@@ -1,5 +1,42 @@
-import type { BrandId } from '../data/paints'
+import { PAINTS, type BrandId } from '../data/paints'
 import { INVENTORY_ID, supabase } from './supabase'
+
+const PALLID_HANDS_ID = 'pal_pallid_hands'
+
+/** Ensure the catalog palette exists as “Pallid Hands”; keep “Todas” as the null tab. */
+export function ensurePallidHandsPalette(state: SavedState): SavedState {
+  const allIds = PAINTS.map((paint) => paint.id)
+
+  if (state.palettes.length === 0) {
+    return {
+      ...state,
+      palettes: [{ id: PALLID_HANDS_ID, name: 'Pallid Hands', paintIds: allIds }],
+      activePaletteId: PALLID_HANDS_ID,
+    }
+  }
+
+  if (state.palettes.length === 1 && state.palettes[0].name !== 'Pallid Hands') {
+    const only = state.palettes[0]
+    return {
+      ...state,
+      palettes: [{ ...only, name: 'Pallid Hands' }],
+      activePaletteId: state.activePaletteId ?? only.id,
+    }
+  }
+
+  const hasPallid = state.palettes.some((p) => p.name === 'Pallid Hands')
+  if (!hasPallid) {
+    return {
+      ...state,
+      palettes: [
+        { id: PALLID_HANDS_ID, name: 'Pallid Hands', paintIds: allIds },
+        ...state.palettes,
+      ],
+    }
+  }
+
+  return state
+}
 
 const CACHE_KEY = 'mini-paint-tracker:v2'
 const LEGACY_CACHE_KEY = 'mini-paint-tracker:v1'
@@ -150,11 +187,12 @@ export async function saveRemoteState(state: SavedState): Promise<void> {
 
 /** Load remote inventory; if empty and local cache has data, push the cache up once. */
 export async function hydrateState(): Promise<SavedState> {
-  const cached = loadCachedState()
-  const remote = await fetchRemoteState()
+  const cached = ensurePallidHandsPalette(loadCachedState())
+  const remoteRaw = await fetchRemoteState()
+  const remote = remoteRaw ? ensurePallidHandsPalette(remoteRaw) : null
 
   if (!remote) {
-    const seed = cached.owned.length > 0 || cached.palettes.length > 0 ? cached : DEFAULT_STATE
+    const seed = cached.owned.length > 0 || cached.palettes.length > 0 ? cached : ensurePallidHandsPalette(DEFAULT_STATE)
     const { error } = await supabase.from('paint_inventory').upsert({
       id: INVENTORY_ID,
       owned: seed.owned,
@@ -169,13 +207,23 @@ export async function hydrateState(): Promise<SavedState> {
   }
 
   if (
-    remote.owned.length === 0 &&
-    remote.palettes.length === 0 &&
+    remoteRaw &&
+    remoteRaw.owned.length === 0 &&
+    remoteRaw.palettes.length === 0 &&
     (cached.owned.length > 0 || cached.palettes.length > 0)
   ) {
-    await saveRemoteState(cached)
-    cacheState(cached)
-    return cached
+    const merged = ensurePallidHandsPalette({
+      ...cached,
+      owned: cached.owned.length > 0 ? cached.owned : remote.owned,
+    })
+    await saveRemoteState(merged)
+    cacheState(merged)
+    return merged
+  }
+
+  // Persist rename/seed if we had to inject Pallid Hands.
+  if (stateFingerprint(remote) !== stateFingerprint(remoteRaw ?? remote)) {
+    await saveRemoteState(remote)
   }
 
   cacheState(remote)
