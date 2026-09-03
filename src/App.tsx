@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   Check,
-  Download,
+  ClipboardCopy,
+  ClipboardPaste,
   Minus,
+  Plus,
   Search,
   ShoppingBag,
-  Upload,
+  Trash2,
   X,
 } from 'lucide-react'
 import {
@@ -23,6 +25,7 @@ import {
   fetchRemoteState,
   hydrateState,
   loadCachedState,
+  newPaletteId,
   parseImport,
   serializeExport,
   stateFingerprint,
@@ -30,6 +33,7 @@ import {
 } from './lib/storage'
 
 type FilterId = 'all' | 'missing' | 'owned'
+type TransferMode = 'copy' | 'paste' | null
 
 function ownsPaint(owned: Set<string>, paint: Paint) {
   if (owned.has(paintKey(paint.id, 'any'))) return true
@@ -51,12 +55,21 @@ export default function App() {
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState<FilterId>('all')
   const [flash, setFlash] = useState<string | null>(null)
-  const fileRef = useRef<HTMLInputElement>(null)
+  const [transfer, setTransfer] = useState<TransferMode>(null)
+  const [pasteText, setPasteText] = useState('')
+  const [addMode, setAddMode] = useState(false)
+  const [paletteDraft, setPaletteDraft] = useState('')
   const stateRef = useRef(state)
   const saverRef = useRef<ReturnType<typeof createInventorySaver> | null>(null)
   const owned = useMemo(() => new Set(state.owned), [state.owned])
 
   stateRef.current = state
+
+  const activePalette = state.palettes.find((p) => p.id === state.activePaletteId) ?? null
+  const palettePaintIds = useMemo(
+    () => (activePalette ? new Set(activePalette.paintIds) : null),
+    [activePalette],
+  )
 
   useEffect(() => {
     const saver = createInventorySaver({
@@ -99,7 +112,6 @@ export default function App() {
     }
   }, [])
 
-  // Soft pull from other devices — never tied to local setState, so it can't loop.
   useEffect(() => {
     if (!ready) return
     const id = window.setInterval(() => {
@@ -130,13 +142,23 @@ export default function App() {
     return () => window.clearTimeout(id)
   }, [flash])
 
+  useEffect(() => {
+    if (!activePalette) setAddMode(false)
+  }, [activePalette])
+
+  const scopedPaints = useMemo(() => {
+    if (!palettePaintIds) return PAINTS
+    if (addMode) return PAINTS.filter((paint) => !palettePaintIds.has(paint.id))
+    return PAINTS.filter((paint) => palettePaintIds.has(paint.id))
+  }, [addMode, palettePaintIds])
+
   const ownedCount = PAINTS.filter((paint) => ownsPaint(owned, paint)).length
   const missingCount = PAINTS.length - ownedCount
   const percent = Math.round((ownedCount / PAINTS.length) * 100)
 
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase()
-    return PAINTS.filter((paint) => {
+    return scopedPaints.filter((paint) => {
       const isOwned = ownsPaint(owned, paint)
       if (filter === 'owned' && !isOwned) return false
       if (filter === 'missing' && isOwned) return false
@@ -150,7 +172,7 @@ export default function App() {
         .toLowerCase()
       return hay.includes(q)
     })
-  }, [filter, owned, query])
+  }, [filter, owned, query, scopedPaints])
 
   function persist(next: SavedState) {
     setState(next)
@@ -181,29 +203,90 @@ export default function App() {
     persist({ ...state, owned: [...next] })
   }
 
-  function exportJson() {
-    const blob = new Blob([serializeExport(state)], { type: 'application/json' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = 'pinturas-minis.json'
-    a.click()
-    URL.revokeObjectURL(url)
-    setFlash('Copia de seguridad descargada')
+  function setActivePalette(id: string | null) {
+    setAddMode(false)
+    persist({ ...state, activePaletteId: id })
   }
 
-  function importJson(file: File) {
-    const reader = new FileReader()
-    reader.onload = () => {
-      try {
-        persist(parseImport(String(reader.result)))
-        setFlash('Inventario restaurado')
-      } catch {
-        setFlash('Ese archivo no es un inventario válido')
-      }
-    }
-    reader.readAsText(file)
+  function createPalette() {
+    const name = paletteDraft.trim()
+    if (!name) return
+    const id = newPaletteId()
+    persist({
+      ...state,
+      palettes: [...state.palettes, { id, name, paintIds: [] }],
+      activePaletteId: id,
+    })
+    setPaletteDraft('')
+    setAddMode(true)
+    setFlash(`Paleta “${name}” creada — añade colores`)
   }
+
+  function deleteActivePalette() {
+    if (!activePalette) return
+    persist({
+      ...state,
+      palettes: state.palettes.filter((p) => p.id !== activePalette.id),
+      activePaletteId: null,
+    })
+    setAddMode(false)
+    setFlash(`Paleta “${activePalette.name}” eliminada`)
+  }
+
+  function addToPalette(paintId: string) {
+    if (!activePalette) return
+    if (activePalette.paintIds.includes(paintId)) return
+    persist({
+      ...state,
+      palettes: state.palettes.map((p) =>
+        p.id === activePalette.id ? { ...p, paintIds: [...p.paintIds, paintId] } : p,
+      ),
+    })
+  }
+
+  function removeFromPalette(paintId: string) {
+    if (!activePalette) return
+    persist({
+      ...state,
+      palettes: state.palettes.map((p) =>
+        p.id === activePalette.id
+          ? { ...p, paintIds: p.paintIds.filter((id) => id !== paintId) }
+          : p,
+      ),
+    })
+  }
+
+  async function copyInventory() {
+    const text = serializeExport(state)
+    try {
+      await navigator.clipboard.writeText(text)
+      setFlash('Inventario copiado al portapapeles')
+      setTransfer(null)
+    } catch {
+      setTransfer('copy')
+    }
+  }
+
+  function openPaste() {
+    setPasteText('')
+    setTransfer('paste')
+  }
+
+  function applyPaste() {
+    try {
+      const next = parseImport(pasteText)
+      persist({ ...next, activePaletteId: next.activePaletteId })
+      setTransfer(null)
+      setPasteText('')
+      setFlash('Inventario pegado (los colores quedan compartidos entre paletas)')
+    } catch {
+      setFlash('Ese texto no es un inventario válido')
+    }
+  }
+
+  const shoppingPool = palettePaintIds
+    ? PAINTS.filter((paint) => palettePaintIds.has(paint.id))
+    : PAINTS
 
   return (
     <div className="min-h-svh bg-desk text-parchment">
@@ -218,12 +301,24 @@ export default function App() {
               Armario de pinturas
             </h1>
             <p className="mt-3 max-w-xl text-sm leading-relaxed text-muted">
-              Lista de compra y equivalencias. Marca el bote que tengas — Citadel, Vallejo,
-              AK o Two Thin Coats — y se sincroniza en la nube (inventario compartido).
+              Paletas por ejército o proyecto. Lo que marques como “lo tengo” se guarda una sola
+              vez y vale para todas las paletas.
             </p>
           </div>
           <Stats owned={ownedCount} total={PAINTS.length} percent={percent} missing={missingCount} />
         </header>
+
+        <PaletteBar
+          palettes={state.palettes}
+          activeId={state.activePaletteId}
+          onSelect={setActivePalette}
+          draft={paletteDraft}
+          onDraft={setPaletteDraft}
+          onCreate={createPalette}
+          onDelete={deleteActivePalette}
+          addMode={addMode}
+          onToggleAddMode={() => setAddMode((v) => !v)}
+        />
 
         <Toolbar
           query={query}
@@ -232,19 +327,8 @@ export default function App() {
           onFilter={setFilter}
           preferred={state.preferredBrand}
           onPreferred={(preferredBrand) => persist({ ...state, preferredBrand })}
-          onExport={exportJson}
-          onImportClick={() => fileRef.current?.click()}
-        />
-        <input
-          ref={fileRef}
-          type="file"
-          accept="application/json"
-          className="hidden"
-          onChange={(event) => {
-            const file = event.target.files?.[0]
-            if (file) importJson(file)
-            event.target.value = ''
-          }}
+          onCopy={() => void copyInventory()}
+          onPaste={openPaste}
         />
 
         {syncError ? (
@@ -259,8 +343,24 @@ export default function App() {
           </p>
         ) : null}
 
+        {activePalette && addMode ? (
+          <p className="mb-3 text-sm text-muted">
+            Añadiendo a <span className="text-brass">{activePalette.name}</span> — pulsa + en un
+            color. El inventario (lo tengo / me falta) no cambia.
+          </p>
+        ) : null}
+
         {visible.length === 0 ? (
-          <EmptyState query={query} filter={filter} onClear={() => { setQuery(''); setFilter('all') }} />
+          <EmptyState
+            query={query}
+            filter={filter}
+            onClear={() => {
+              setQuery('')
+              setFilter('all')
+            }}
+            paletteEmpty={Boolean(activePalette && !addMode && activePalette.paintIds.length === 0)}
+            onAddColors={() => setAddMode(true)}
+          />
         ) : (
           <>
             <div className="hidden lg:block">
@@ -270,6 +370,13 @@ export default function App() {
                 preferred={state.preferredBrand}
                 onToggleBrand={toggleBrand}
                 onToggleRow={toggleRow}
+                paletteAction={
+                  activePalette
+                    ? addMode
+                      ? { kind: 'add', onClick: addToPalette }
+                      : { kind: 'remove', onClick: removeFromPalette }
+                    : null
+                }
               />
             </div>
             <div className="grid gap-3 lg:hidden">
@@ -281,6 +388,13 @@ export default function App() {
                   preferred={state.preferredBrand}
                   onToggleBrand={toggleBrand}
                   onToggleRow={toggleRow}
+                  paletteAction={
+                    activePalette
+                      ? addMode
+                        ? { kind: 'add', onClick: () => addToPalette(paint.id) }
+                        : { kind: 'remove', onClick: () => removeFromPalette(paint.id) }
+                      : null
+                  }
                 />
               ))}
             </div>
@@ -289,17 +403,33 @@ export default function App() {
 
         {filter !== 'owned' ? (
           <ShoppingNote
-            missing={PAINTS.filter((paint) => !ownsPaint(owned, paint)).length}
+            missing={shoppingPool.filter((paint) => !ownsPaint(owned, paint)).length}
             preferred={state.preferredBrand}
-            sample={PAINTS.filter((paint) => !ownsPaint(owned, paint))
+            sample={shoppingPool
+              .filter((paint) => !ownsPaint(owned, paint))
               .slice(0, 3)
               .map((paint) => shoppingName(paint, state.preferredBrand))}
           />
         ) : null}
       </div>
+
+      {transfer ? (
+        <TransferModal
+          mode={transfer}
+          text={transfer === 'copy' ? serializeExport(state) : pasteText}
+          onText={setPasteText}
+          onClose={() => setTransfer(null)}
+          onApplyPaste={applyPaste}
+        />
+      ) : null}
     </div>
   )
 }
+
+type PaletteAction =
+  | { kind: 'add'; onClick: (paintId: string) => void }
+  | { kind: 'remove'; onClick: (paintId: string) => void }
+  | null
 
 function Stats({
   owned,
@@ -336,6 +466,106 @@ function Stat({ label, value }: { label: string; value: string }) {
   )
 }
 
+function PaletteBar({
+  palettes,
+  activeId,
+  onSelect,
+  draft,
+  onDraft,
+  onCreate,
+  onDelete,
+  addMode,
+  onToggleAddMode,
+}: {
+  palettes: SavedState['palettes']
+  activeId: string | null
+  onSelect: (id: string | null) => void
+  draft: string
+  onDraft: (value: string) => void
+  onCreate: () => void
+  onDelete: () => void
+  addMode: boolean
+  onToggleAddMode: () => void
+}) {
+  return (
+    <div className="mb-4 flex flex-col gap-3 rounded-2xl border border-line bg-panel p-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          onClick={() => onSelect(null)}
+          className={`rounded-lg px-3 py-1.5 text-sm font-medium transition ${
+            activeId == null ? 'bg-brass text-desk' : 'bg-panel-2 text-muted hover:text-parchment'
+          }`}
+        >
+          Todas
+        </button>
+        {palettes.map((palette) => (
+          <button
+            key={palette.id}
+            type="button"
+            onClick={() => onSelect(palette.id)}
+            className={`rounded-lg px-3 py-1.5 text-sm font-medium transition ${
+              activeId === palette.id
+                ? 'bg-brass text-desk'
+                : 'bg-panel-2 text-muted hover:text-parchment'
+            }`}
+          >
+            {palette.name}
+            <span className="ml-1.5 opacity-70">({palette.paintIds.length})</span>
+          </button>
+        ))}
+      </div>
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+        <form
+          className="flex min-w-0 flex-1 gap-2"
+          onSubmit={(event) => {
+            event.preventDefault()
+            onCreate()
+          }}
+        >
+          <input
+            value={draft}
+            onChange={(event) => onDraft(event.target.value)}
+            placeholder="Nueva paleta (ej. Death Guard)…"
+            className="min-w-0 flex-1 rounded-lg border border-line bg-panel-2 px-3 py-2 text-sm text-parchment outline-none placeholder:text-muted focus:border-brass"
+          />
+          <button
+            type="submit"
+            className="inline-flex items-center gap-1 rounded-lg border border-brass/40 bg-brass/15 px-3 py-2 text-sm text-brass hover:bg-brass/25"
+          >
+            <Plus className="size-4" />
+            Crear
+          </button>
+        </form>
+        {activeId ? (
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={onToggleAddMode}
+              className={`inline-flex items-center gap-1 rounded-lg border px-3 py-2 text-sm ${
+                addMode
+                  ? 'border-brass bg-brass text-desk'
+                  : 'border-line bg-panel-2 text-muted hover:text-parchment'
+              }`}
+            >
+              <Plus className="size-4" />
+              {addMode ? 'Listo' : 'Añadir colores'}
+            </button>
+            <button
+              type="button"
+              onClick={onDelete}
+              className="inline-flex items-center gap-1 rounded-lg border border-line bg-panel-2 px-3 py-2 text-sm text-muted hover:border-red-400/40 hover:text-red-200"
+            >
+              <Trash2 className="size-4" />
+              Borrar
+            </button>
+          </div>
+        ) : null}
+      </div>
+    </div>
+  )
+}
+
 function Toolbar({
   query,
   onQuery,
@@ -343,8 +573,8 @@ function Toolbar({
   onFilter,
   preferred,
   onPreferred,
-  onExport,
-  onImportClick,
+  onCopy,
+  onPaste,
 }: {
   query: string
   onQuery: (value: string) => void
@@ -352,8 +582,8 @@ function Toolbar({
   onFilter: (value: FilterId) => void
   preferred: BrandId
   onPreferred: (value: BrandId) => void
-  onExport: () => void
-  onImportClick: () => void
+  onCopy: () => void
+  onPaste: () => void
 }) {
   return (
     <div className="mb-5 flex flex-col gap-3">
@@ -407,20 +637,92 @@ function Toolbar({
         <div className="flex gap-2">
           <button
             type="button"
-            onClick={onExport}
+            onClick={onCopy}
             className="inline-flex items-center gap-1.5 rounded-lg border border-line bg-panel px-3 py-2 text-sm text-muted hover:text-parchment"
           >
-            <Download className="size-4" />
-            Exportar
+            <ClipboardCopy className="size-4" />
+            Copiar
           </button>
           <button
             type="button"
-            onClick={onImportClick}
+            onClick={onPaste}
             className="inline-flex items-center gap-1.5 rounded-lg border border-line bg-panel px-3 py-2 text-sm text-muted hover:text-parchment"
           >
-            <Upload className="size-4" />
-            Importar
+            <ClipboardPaste className="size-4" />
+            Pegar
           </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function TransferModal({
+  mode,
+  text,
+  onText,
+  onClose,
+  onApplyPaste,
+}: {
+  mode: 'copy' | 'paste'
+  text: string
+  onText: (value: string) => void
+  onClose: () => void
+  onApplyPaste: () => void
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/60 p-4 sm:items-center">
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={mode === 'copy' ? 'Copiar inventario' : 'Pegar inventario'}
+        className="w-full max-w-lg rounded-2xl border border-line bg-panel p-4 shadow-xl"
+      >
+        <div className="mb-3 flex items-start justify-between gap-3">
+          <div>
+            <h2 className="font-display text-2xl text-parchment">
+              {mode === 'copy' ? 'Copia manual' : 'Pegar inventario'}
+            </h2>
+            <p className="mt-1 text-sm text-muted">
+              {mode === 'copy'
+                ? 'El portapapeles no estaba disponible. Selecciona y copia el texto.'
+                : 'Pega aquí el JSON del inventario. Los colores (lo tengo) se comparten entre paletas.'}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-lg p-1.5 text-muted hover:bg-panel-2 hover:text-parchment"
+            aria-label="Cerrar"
+          >
+            <X className="size-5" />
+          </button>
+        </div>
+        <textarea
+          value={text}
+          readOnly={mode === 'copy'}
+          onChange={(event) => onText(event.target.value)}
+          rows={12}
+          className="w-full resize-y rounded-xl border border-line bg-panel-2 px-3 py-2 font-mono text-xs text-parchment outline-none focus:border-brass"
+          spellCheck={false}
+        />
+        <div className="mt-3 flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-lg border border-line px-3 py-2 text-sm text-muted hover:text-parchment"
+          >
+            Cerrar
+          </button>
+          {mode === 'paste' ? (
+            <button
+              type="button"
+              onClick={onApplyPaste}
+              className="rounded-lg bg-brass px-3 py-2 text-sm font-medium text-desk"
+            >
+              Aplicar
+            </button>
+          ) : null}
         </div>
       </div>
     </div>
@@ -433,12 +735,14 @@ function PaintTable({
   preferred,
   onToggleBrand,
   onToggleRow,
+  paletteAction,
 }: {
   paints: Paint[]
   owned: Set<string>
   preferred: BrandId
   onToggleBrand: (paint: Paint, brand: BrandId) => void
   onToggleRow: (paint: Paint) => void
+  paletteAction: PaletteAction
 }) {
   return (
     <div className="overflow-hidden rounded-2xl border border-line bg-panel">
@@ -456,6 +760,7 @@ function PaintTable({
                 ) : null}
               </th>
             ))}
+            {paletteAction ? <th className="px-3 py-3 font-medium">Paleta</th> : null}
           </tr>
         </thead>
         <tbody>
@@ -480,6 +785,14 @@ function PaintTable({
                     />
                   </td>
                 ))}
+                {paletteAction ? (
+                  <td className="px-3 py-2 align-middle">
+                    <PaletteActionButton
+                      action={paletteAction}
+                      paintId={paint.id}
+                    />
+                  </td>
+                ) : null}
               </tr>
             )
           })}
@@ -495,18 +808,36 @@ function PaintCard({
   preferred,
   onToggleBrand,
   onToggleRow,
+  paletteAction,
 }: {
   paint: Paint
   owned: Set<string>
   preferred: BrandId
   onToggleBrand: (paint: Paint, brand: BrandId) => void
   onToggleRow: (paint: Paint) => void
+  paletteAction: { kind: 'add' | 'remove'; onClick: () => void } | null
 }) {
   const got = ownsPaint(owned, paint)
   const brands = ownedBrands(owned, paint)
   return (
     <article className={`rounded-2xl border p-4 ${got ? 'border-owned/50 bg-owned/10' : 'border-line bg-panel'}`}>
-      <RowIdentity paint={paint} owned={got} onToggle={() => onToggleRow(paint)} />
+      <div className="flex items-start justify-between gap-2">
+        <RowIdentity paint={paint} owned={got} onToggle={() => onToggleRow(paint)} />
+        {paletteAction ? (
+          <button
+            type="button"
+            onClick={paletteAction.onClick}
+            className={`inline-flex shrink-0 items-center gap-1 rounded-lg border px-2 py-1 text-xs ${
+              paletteAction.kind === 'add'
+                ? 'border-brass/40 text-brass hover:bg-brass/15'
+                : 'border-line text-muted hover:text-parchment'
+            }`}
+          >
+            {paletteAction.kind === 'add' ? <Plus className="size-3.5" /> : <Minus className="size-3.5" />}
+            {paletteAction.kind === 'add' ? 'Añadir' : 'Quitar'}
+          </button>
+        ) : null}
+      </div>
       {got && brands.length === 0 ? (
         <p className="mt-2 text-xs text-owned">Marcado como lo tienes, sin marca concreta.</p>
       ) : null}
@@ -524,6 +855,29 @@ function PaintCard({
         ))}
       </div>
     </article>
+  )
+}
+
+function PaletteActionButton({
+  action,
+  paintId,
+}: {
+  action: Exclude<PaletteAction, null>
+  paintId: string
+}) {
+  return (
+    <button
+      type="button"
+      onClick={() => action.onClick(paintId)}
+      className={`inline-flex items-center gap-1 rounded-lg border px-2 py-1.5 text-xs ${
+        action.kind === 'add'
+          ? 'border-brass/40 text-brass hover:bg-brass/15'
+          : 'border-line text-muted hover:text-parchment'
+      }`}
+    >
+      {action.kind === 'add' ? <Plus className="size-3.5" /> : <Minus className="size-3.5" />}
+      {action.kind === 'add' ? 'Añadir' : 'Quitar'}
+    </button>
   )
 }
 
@@ -649,13 +1003,18 @@ function EmptyState({
   query,
   filter,
   onClear,
+  paletteEmpty,
+  onAddColors,
 }: {
   query: string
   filter: FilterId
   onClear: () => void
+  paletteEmpty?: boolean
+  onAddColors?: () => void
 }) {
-  const message =
-    filter === 'owned'
+  const message = paletteEmpty
+    ? 'Esta paleta está vacía. Añade colores; lo que ya tengas marcado sigue contando.'
+    : filter === 'owned'
       ? 'Todavía no has marcado ninguna pintura.'
       : filter === 'missing'
         ? 'Lista completa: no te falta ningún color de esta tabla.'
@@ -663,14 +1022,25 @@ function EmptyState({
   return (
     <div className="rounded-2xl border border-dashed border-line bg-panel px-6 py-16 text-center">
       <p className="text-parchment">{message}</p>
-      <button
-        type="button"
-        onClick={onClear}
-        className="mt-4 inline-flex items-center gap-1 rounded-lg border border-line px-3 py-2 text-sm text-muted hover:text-parchment"
-      >
-        <X className="size-4" />
-        Ver todas
-      </button>
+      {paletteEmpty && onAddColors ? (
+        <button
+          type="button"
+          onClick={onAddColors}
+          className="mt-4 inline-flex items-center gap-1 rounded-lg bg-brass px-3 py-2 text-sm font-medium text-desk"
+        >
+          <Plus className="size-4" />
+          Añadir colores
+        </button>
+      ) : (
+        <button
+          type="button"
+          onClick={onClear}
+          className="mt-4 inline-flex items-center gap-1 rounded-lg border border-line px-3 py-2 text-sm text-muted hover:text-parchment"
+        >
+          <X className="size-4" />
+          Ver todas
+        </button>
+      )}
     </div>
   )
 }

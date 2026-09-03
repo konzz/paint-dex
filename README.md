@@ -9,7 +9,9 @@ Inventario rápido para miniaturas: 23 colores con equivalencias entre **Two Thi
 3. Filtra por **Me faltan** cuando vayas a comprar.
 4. Elige la marca de la tienda en *Si voy a comprar, muéstrame* para ver los nombres de esa gama.
 
-Los datos viven en **Supabase** (inventario compartido). El navegador guarda una copia en caché; **Exportar** / **Importar** siguen disponibles como respaldo.
+Los datos viven en **Supabase** (inventario compartido). Puedes tener varias **paletas** (ejércitos/proyectos); lo marcado como “lo tengo” es global entre ellas.
+
+**Copiar / Pegar** mueve el inventario por el portapapeles (JSON). Exportar archivos ya no se usa.
 
 ## Desarrollo local
 
