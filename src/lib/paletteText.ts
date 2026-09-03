@@ -7,7 +7,7 @@ import {
   type PaintKind,
 } from '../data/paints'
 
-const EMPTY = /^(?:-|—|–|−|sin equivalente|n\/?a|none|null)?$/i
+const EMPTY = /^(?:[-—–−]+|sin equivalente|n\/?a|none|null)?$/i
 
 function norm(value: string) {
   return value
@@ -62,12 +62,27 @@ function splitCells(line: string): string[] {
 }
 
 function isSeparatorRow(cells: string[]) {
-  return cells.length > 0 && cells.every((cell) => /^[\s|:.-—–−]*$/.test(cell))
+  // Avoid `/[.-—]/` style ranges — `.` to em-dash includes letters and breaks detection.
+  return (
+    cells.length > 0 &&
+    cells.every((cell) => {
+      const compact = cell.replace(/\s+/g, '')
+      return /^:?-{2,}:?$/.test(compact)
+    })
+  )
 }
 
 function parseCell(raw: string): { name: string | null; preferred: boolean } {
-  const preferred = /\*\*[^*]+\*\*/.test(raw)
-  const cleaned = raw.replace(/\*\*/g, '').replace(/_/g, '').trim()
+  const preferred =
+    /\*\*[^*]+\*\*/.test(raw) ||
+    /__[^_]+__/.test(raw) ||
+    /<\/?(?:b|strong)>/i.test(raw)
+  const cleaned = raw
+    .replace(/\*\*/g, '')
+    .replace(/__/g, '')
+    .replace(/<\/?(?:b|strong)>/gi, '')
+    .replace(/_/g, '')
+    .trim()
   return { name: brandName(cleaned), preferred }
 }
 
@@ -249,6 +264,9 @@ export function parsePaletteText(
   const seen = new Set<string>()
   let matched = 0
   let created = 0
+  const tableHasBold = tableLines.some(
+    (line) => /\*\*[^*]+\*\*/.test(line) || /__[^_]+__/.test(line) || /<\/?(?:b|strong)>/i.test(line),
+  )
 
   for (const line of tableLines.slice(1)) {
     const cells = splitCells(line)
@@ -299,9 +317,18 @@ export function parsePaletteText(
       ['vallejo', vallejoCell.preferred],
       ['ak', akCell.preferred],
     ]
+    let marked = false
     for (const [brand, preferred] of prefs) {
       if (preferred && slots[brand]) {
         ownedKeys.push(paintKey(paint.id, brand))
+        marked = true
+      }
+    }
+    if (!marked) {
+      const filled = (['ttc', 'citadel', 'vallejo', 'ak'] as const).filter((brand) => slots[brand])
+      // One brand only, or paste lost `**` → first filled brand is the bottle you use.
+      if (filled.length === 1 || (!tableHasBold && filled.length > 0)) {
+        ownedKeys.push(paintKey(paint.id, filled[0]))
       }
     }
   }
