@@ -6,7 +6,6 @@ import {
   Minus,
   Plus,
   Search,
-  ShoppingBag,
   Trash2,
   X,
 } from 'lucide-react'
@@ -26,11 +25,10 @@ import {
   hydrateState,
   loadCachedState,
   newPaletteId,
-  parseImport,
-  serializeExport,
   stateFingerprint,
   type SavedState,
 } from './lib/storage'
+import { parsePaletteText, serializePaletteText } from './lib/paletteText'
 
 type FilterId = 'all' | 'missing' | 'owned'
 type TransferMode = 'copy' | 'paste' | null
@@ -42,10 +40,6 @@ function ownsPaint(owned: Set<string>, paint: Paint) {
 
 function ownedBrands(owned: Set<string>, paint: Paint): BrandId[] {
   return BRANDS.filter((brand) => owned.has(paintKey(paint.id, brand.id))).map((b) => b.id)
-}
-
-function shoppingName(paint: Paint, preferred: BrandId) {
-  return paint.names[preferred] ?? paint.names.citadel ?? paint.original
 }
 
 export default function App() {
@@ -62,6 +56,7 @@ export default function App() {
   const stateRef = useRef(state)
   const saverRef = useRef<ReturnType<typeof createInventorySaver> | null>(null)
   const owned = useMemo(() => new Set(state.owned), [state.owned])
+  const catalog = useMemo(() => [...PAINTS, ...state.extraPaints], [state.extraPaints])
 
   stateRef.current = state
 
@@ -147,14 +142,14 @@ export default function App() {
   }, [activePalette])
 
   const scopedPaints = useMemo(() => {
-    if (!palettePaintIds) return PAINTS
-    if (addMode) return PAINTS.filter((paint) => !palettePaintIds.has(paint.id))
-    return PAINTS.filter((paint) => palettePaintIds.has(paint.id))
-  }, [addMode, palettePaintIds])
+    if (!palettePaintIds) return catalog
+    if (addMode) return catalog.filter((paint) => !palettePaintIds.has(paint.id))
+    return catalog.filter((paint) => palettePaintIds.has(paint.id))
+  }, [addMode, catalog, palettePaintIds])
 
-  const ownedCount = PAINTS.filter((paint) => ownsPaint(owned, paint)).length
-  const missingCount = PAINTS.length - ownedCount
-  const percent = Math.round((ownedCount / PAINTS.length) * 100)
+  const ownedCount = catalog.filter((paint) => ownsPaint(owned, paint)).length
+  const missingCount = catalog.length - ownedCount
+  const percent = catalog.length ? Math.round((ownedCount / catalog.length) * 100) : 0
 
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -256,11 +251,19 @@ export default function App() {
     })
   }
 
+  function paletteExportText() {
+    if (activePalette) {
+      const paints = catalog.filter((paint) => activePalette.paintIds.includes(paint.id))
+      return serializePaletteText(activePalette.name, paints)
+    }
+    return serializePaletteText('Todas', catalog)
+  }
+
   async function copyInventory() {
-    const text = serializeExport(state)
+    const text = paletteExportText()
     try {
       await navigator.clipboard.writeText(text)
-      setFlash('Inventario copiado al portapapeles')
+      setFlash('Paleta copiada al portapapeles')
       setTransfer(null)
     } catch {
       setTransfer('copy')
@@ -274,19 +277,42 @@ export default function App() {
 
   function applyPaste() {
     try {
-      const next = parseImport(pasteText)
-      persist({ ...next, activePaletteId: next.activePaletteId })
+      const parsed = parsePaletteText(pasteText, state.extraPaints)
+      const existing = state.palettes.find(
+        (p) => p.name.trim().toLowerCase() === parsed.name.trim().toLowerCase(),
+      )
+      const id = existing?.id ?? newPaletteId()
+      const palettes = existing
+        ? state.palettes.map((p) =>
+            p.id === id ? { ...p, name: parsed.name, paintIds: parsed.paintIds } : p,
+          )
+        : [...state.palettes, { id, name: parsed.name, paintIds: parsed.paintIds }]
+      const knownIds = new Set([...PAINTS, ...state.extraPaints].map((p) => p.id))
+      const extraPaints = [
+        ...state.extraPaints,
+        ...parsed.extraPaints.filter((p) => !knownIds.has(p.id)),
+      ]
+      persist({
+        ...state,
+        palettes,
+        activePaletteId: id,
+        extraPaints,
+      })
+      setAddMode(false)
       setTransfer(null)
       setPasteText('')
-      setFlash('Inventario pegado (los colores quedan compartidos entre paletas)')
+      const bits = [`Paleta “${parsed.name}”`]
+      if (parsed.matched) bits.push(`${parsed.matched} del catálogo`)
+      if (parsed.created) bits.push(`${parsed.created} nuevos`)
+      setFlash(bits.join(' · '))
     } catch {
-      setFlash('Ese texto no es un inventario válido')
+      setFlash('Formato inválido. Primera línea = nombre; luego Color: TTC, Citadel, Vallejo, AK')
     }
   }
 
   const shoppingPool = palettePaintIds
-    ? PAINTS.filter((paint) => palettePaintIds.has(paint.id))
-    : PAINTS
+    ? catalog.filter((paint) => palettePaintIds.has(paint.id))
+    : catalog
 
   return (
     <div className="min-h-svh bg-desk text-parchment">
@@ -305,7 +331,7 @@ export default function App() {
               vez y vale para todas las paletas.
             </p>
           </div>
-          <Stats owned={ownedCount} total={PAINTS.length} percent={percent} missing={missingCount} />
+          <Stats owned={ownedCount} total={catalog.length} percent={percent} missing={missingCount} />
         </header>
 
         <PaletteBar
@@ -325,8 +351,6 @@ export default function App() {
           onQuery={setQuery}
           filter={filter}
           onFilter={setFilter}
-          preferred={state.preferredBrand}
-          onPreferred={(preferredBrand) => persist({ ...state, preferredBrand })}
           onCopy={() => void copyInventory()}
           onPaste={openPaste}
         />
@@ -367,7 +391,6 @@ export default function App() {
               <PaintTable
                 paints={visible}
                 owned={owned}
-                preferred={state.preferredBrand}
                 onToggleBrand={toggleBrand}
                 onToggleRow={toggleRow}
                 paletteAction={
@@ -385,7 +408,6 @@ export default function App() {
                   key={paint.id}
                   paint={paint}
                   owned={owned}
-                  preferred={state.preferredBrand}
                   onToggleBrand={toggleBrand}
                   onToggleRow={toggleRow}
                   paletteAction={
@@ -404,11 +426,10 @@ export default function App() {
         {filter !== 'owned' ? (
           <ShoppingNote
             missing={shoppingPool.filter((paint) => !ownsPaint(owned, paint)).length}
-            preferred={state.preferredBrand}
             sample={shoppingPool
               .filter((paint) => !ownsPaint(owned, paint))
               .slice(0, 3)
-              .map((paint) => shoppingName(paint, state.preferredBrand))}
+              .map((paint) => paint.original)}
           />
         ) : null}
       </div>
@@ -416,7 +437,7 @@ export default function App() {
       {transfer ? (
         <TransferModal
           mode={transfer}
-          text={transfer === 'copy' ? serializeExport(state) : pasteText}
+          text={transfer === 'copy' ? paletteExportText() : pasteText}
           onText={setPasteText}
           onClose={() => setTransfer(null)}
           onApplyPaste={applyPaste}
@@ -571,8 +592,6 @@ function Toolbar({
   onQuery,
   filter,
   onFilter,
-  preferred,
-  onPreferred,
   onCopy,
   onPaste,
 }: {
@@ -580,8 +599,6 @@ function Toolbar({
   onQuery: (value: string) => void
   filter: FilterId
   onFilter: (value: FilterId) => void
-  preferred: BrandId
-  onPreferred: (value: BrandId) => void
   onCopy: () => void
   onPaste: () => void
 }) {
@@ -617,28 +634,11 @@ function Toolbar({
             </button>
           ))}
         </div>
-      </div>
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <label className="flex items-center gap-2 text-sm text-muted">
-          <ShoppingBag className="size-4 text-brass" />
-          Si voy a comprar, muéstrame
-          <select
-            value={preferred}
-            onChange={(event) => onPreferred(event.target.value as BrandId)}
-            className="rounded-lg border border-line bg-panel px-2 py-1.5 text-parchment outline-none focus:border-brass"
-          >
-            {BRANDS.map((brand) => (
-              <option key={brand.id} value={brand.id}>
-                {brand.label}
-              </option>
-            ))}
-          </select>
-        </label>
         <div className="flex gap-2">
           <button
             type="button"
             onClick={onCopy}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-line bg-panel px-3 py-2 text-sm text-muted hover:text-parchment"
+            className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-xl border border-line bg-panel px-3 py-2 text-sm text-muted hover:text-parchment md:flex-none"
           >
             <ClipboardCopy className="size-4" />
             Copiar
@@ -646,7 +646,7 @@ function Toolbar({
           <button
             type="button"
             onClick={onPaste}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-line bg-panel px-3 py-2 text-sm text-muted hover:text-parchment"
+            className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-xl border border-line bg-panel px-3 py-2 text-sm text-muted hover:text-parchment md:flex-none"
           >
             <ClipboardPaste className="size-4" />
             Pegar
@@ -657,18 +657,10 @@ function Toolbar({
   )
 }
 
-const PASTE_EXAMPLE = `{
-  "v": 2,
-  "owned": ["wraithbone::citadel", "leadbelcher::any"],
-  "preferredBrand": "citadel",
-  "palettes": [
-    {
-      "id": "pal_example",
-      "name": "Pallid Hands",
-      "paintIds": ["wraithbone", "leadbelcher", "guilliman-flesh"]
-    }
-  ]
-}`
+const PASTE_EXAMPLE = `Pallid Hands
+Wraithbone: Ivory Tusk, Wraithbone, Pale Sand, Pale Sand
+Leadbelcher: Sir Coates Silver, Leadbelcher, Gunmetal, Gun Metal
+Guilliman Flesh: -, Guilliman Flesh, -, -`
 
 function TransferModal({
   mode,
@@ -699,7 +691,7 @@ function TransferModal({
             <p className="mt-1 text-sm text-muted">
               {mode === 'copy'
                 ? 'El portapapeles no estaba disponible. Selecciona y copia el texto.'
-                : 'Pega aquí el JSON del inventario. Los colores (lo tengo) se comparten entre paletas.'}
+                : 'Primera línea = nombre de la paleta. Luego una línea por color: TTC, Citadel, Vallejo, AK. Usa - si no hay equivalente.'}
             </p>
           </div>
           <button
@@ -723,7 +715,7 @@ function TransferModal({
         {mode === 'paste' ? (
           <div className="mt-3 rounded-xl border border-line bg-panel-2/80 p-3">
             <div className="mb-2 flex items-center justify-between gap-2">
-              <p className="text-xs font-medium tracking-wide text-muted uppercase">Ejemplo mínimo</p>
+              <p className="text-xs font-medium tracking-wide text-muted uppercase">Ejemplo</p>
               <button
                 type="button"
                 onClick={() => onText(PASTE_EXAMPLE)}
@@ -760,17 +752,16 @@ function TransferModal({
   )
 }
 
+
 function PaintTable({
   paints,
   owned,
-  preferred,
   onToggleBrand,
   onToggleRow,
   paletteAction,
 }: {
   paints: Paint[]
   owned: Set<string>
-  preferred: BrandId
   onToggleBrand: (paint: Paint, brand: BrandId) => void
   onToggleRow: (paint: Paint) => void
   paletteAction: PaletteAction
@@ -784,11 +775,6 @@ function PaintTable({
             {BRANDS.map((brand) => (
               <th key={brand.id} className="px-3 py-3 font-medium">
                 {brand.label}
-                {preferred === brand.id ? (
-                  <span className="ml-2 rounded-full bg-brass/20 px-1.5 py-0.5 text-[10px] text-brass">
-                    compra
-                  </span>
-                ) : null}
               </th>
             ))}
             {paletteAction ? <th className="px-3 py-3 font-medium">Paleta</th> : null}
@@ -811,17 +797,13 @@ function PaintTable({
                       paint={paint}
                       brand={brand.id}
                       checked={owned.has(paintKey(paint.id, brand.id))}
-                      preferred={preferred === brand.id}
                       onToggle={() => onToggleBrand(paint, brand.id)}
                     />
                   </td>
                 ))}
                 {paletteAction ? (
                   <td className="px-3 py-2 align-middle">
-                    <PaletteActionButton
-                      action={paletteAction}
-                      paintId={paint.id}
-                    />
+                    <PaletteActionButton action={paletteAction} paintId={paint.id} />
                   </td>
                 ) : null}
               </tr>
@@ -833,17 +815,16 @@ function PaintTable({
   )
 }
 
+
 function PaintCard({
   paint,
   owned,
-  preferred,
   onToggleBrand,
   onToggleRow,
   paletteAction,
 }: {
   paint: Paint
   owned: Set<string>
-  preferred: BrandId
   onToggleBrand: (paint: Paint, brand: BrandId) => void
   onToggleRow: (paint: Paint) => void
   paletteAction: { kind: 'add' | 'remove'; onClick: () => void } | null
@@ -879,7 +860,6 @@ function PaintCard({
             paint={paint}
             brand={brand.id}
             checked={owned.has(paintKey(paint.id, brand.id))}
-            preferred={preferred === brand.id}
             onToggle={() => onToggleBrand(paint, brand.id)}
             compact
           />
@@ -964,18 +944,17 @@ function RowIdentity({
   )
 }
 
+
 function BrandCell({
   paint,
   brand,
   checked,
-  preferred,
   onToggle,
   compact = false,
 }: {
   paint: Paint
   brand: BrandId
   checked: boolean
-  preferred: boolean
   onToggle: () => void
   compact?: boolean
 }) {
@@ -1004,9 +983,7 @@ function BrandCell({
       className={`flex w-full min-h-12 items-center gap-2 rounded-xl border px-3 py-2 text-left transition ${
         checked
           ? 'border-owned bg-owned/15 text-parchment'
-          : preferred
-            ? 'border-brass/50 bg-brass/8 hover:border-brass'
-            : 'border-line bg-panel-2/60 hover:border-muted'
+          : 'border-line bg-panel-2/60 hover:border-muted'
       } ${compact ? 'min-h-14' : ''}`}
     >
       <span
@@ -1078,24 +1055,21 @@ function EmptyState({
 
 function ShoppingNote({
   missing,
-  preferred,
   sample,
 }: {
   missing: number
-  preferred: BrandId
   sample: string[]
 }) {
   if (missing === 0) {
     return (
       <p className="mt-6 text-center text-sm text-owned">
-        Tienes cubiertos los 23 colores de la lista.
+        Tienes cubiertos todos los colores de esta lista.
       </p>
     )
   }
-  const brand = BRANDS.find((item) => item.id === preferred)?.label
   return (
     <p className="mt-6 text-center text-sm text-muted">
-      Te faltan {missing} {missing === 1 ? 'color' : 'colores'}. En {brand} empieza por{' '}
+      Te faltan {missing} {missing === 1 ? 'color' : 'colores'}. Empieza por{' '}
       {sample.join(', ')}
       {missing > sample.length ? '…' : '.'}
     </p>

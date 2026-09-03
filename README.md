@@ -1,17 +1,25 @@
 # Armario de pinturas
 
-Inventario rápido para miniaturas: 23 colores con equivalencias entre **Two Thin Coats**, **Citadel**, **Vallejo** y **AK 3rd Gen**. Marcas lo que ya tienes y se guarda en el navegador.
+Inventario rápido para miniaturas: colores con equivalencias entre **Two Thin Coats**, **Citadel**, **Vallejo** y **AK 3rd Gen**. Marcas lo que ya tienes; se sincroniza en Supabase.
 
 ## Cómo usarlo
 
 1. Pulsa el círculo del color o el chip **Me falta / Lo tengo** para marcar que ya cubres ese tono.
 2. Pulsa el equivalente concreto (Citadel, Vallejo, AK, TTC) si quieres anotar *qué bote* tienes.
 3. Filtra por **Me faltan** cuando vayas a comprar.
-4. Elige la marca de la tienda en *Si voy a comprar, muéstrame* para ver los nombres de esa gama.
+4. Organiza por **paletas** (ej. Pallid Hands); el inventario es compartido entre ellas.
 
-Los datos viven en **Supabase** (inventario compartido). Puedes tener varias **paletas** (ejércitos/proyectos); lo marcado como “lo tengo” es global entre ellas.
+## Copiar / Pegar
 
-**Copiar / Pegar** mueve el inventario por el portapapeles (JSON). Exportar archivos ya no se usa.
+Texto plano (no JSON):
+
+```
+Nombre de la paleta
+Color: Two Thin Coats, Citadel, Vallejo, AK
+Otro color: -, Citadel Name, Vallejo Name, -
+```
+
+Usa `-` si no hay equivalente. La primera línea es el nombre; si la paleta ya existe, se actualiza.
 
 ## Desarrollo local
 
@@ -33,10 +41,4 @@ npm run preview
 
 Al hacer push a `main`, el workflow `.github/workflows/deploy-pages.yml` publica `dist/`.
 
-1. Crea el repositorio en GitHub (público, para Pages gratis).
-2. En el repo: **Settings → Pages → Build and deployment → Source: GitHub Actions**.
-3. Tras el primer workflow en verde, la web queda en:
-
-`https://<usuario>.github.io/<repo>/`
-
-El `base` de Vite es `./`, así que funciona tanto en la raíz como en un subpath de proyecto.
+`https://konzz.github.io/paint-dex/`

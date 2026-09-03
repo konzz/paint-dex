@@ -1,16 +1,14 @@
-import { PAINTS, type BrandId } from '../data/paints'
+import { PAINTS, type Paint } from '../data/paints'
 import { INVENTORY_ID, supabase } from './supabase'
 
 const PALLID_HANDS_ID = 'pal_pallid_hands'
 
 /** Ensure the catalog palette exists as “Pallid Hands”; keep “Todas” as the null tab. */
 export function ensurePallidHandsPalette(state: SavedState): SavedState {
-  const allIds = PAINTS.map((paint) => paint.id)
-
   if (state.palettes.length === 0) {
     return {
       ...state,
-      palettes: [{ id: PALLID_HANDS_ID, name: 'Pallid Hands', paintIds: allIds }],
+      palettes: [{ id: PALLID_HANDS_ID, name: 'Pallid Hands', paintIds: PAINTS.map((p) => p.id) }],
       activePaletteId: PALLID_HANDS_ID,
     }
   }
@@ -29,7 +27,7 @@ export function ensurePallidHandsPalette(state: SavedState): SavedState {
     return {
       ...state,
       palettes: [
-        { id: PALLID_HANDS_ID, name: 'Pallid Hands', paintIds: allIds },
+        { id: PALLID_HANDS_ID, name: 'Pallid Hands', paintIds: PAINTS.map((p) => p.id) },
         ...state.palettes,
       ],
     }
@@ -51,32 +49,26 @@ export type Palette = {
 export type SavedState = {
   v: 2
   owned: string[]
-  preferredBrand: BrandId
   palettes: Palette[]
   activePaletteId: string | null
+  extraPaints: Paint[]
 }
 
 export const DEFAULT_STATE: SavedState = {
   v: 2,
   owned: [],
-  preferredBrand: 'citadel',
   palettes: [],
   activePaletteId: null,
+  extraPaints: [],
 }
 
 type InventoryRow = {
   id: string
   owned: string[] | null
-  preferred_brand: string | null
   palettes?: unknown
   active_palette_id?: string | null
+  extra_paints?: unknown
   updated_at?: string
-}
-
-function normalizeBrand(brand: unknown): BrandId {
-  return brand === 'ttc' || brand === 'citadel' || brand === 'vallejo' || brand === 'ak'
-    ? brand
-    : 'citadel'
 }
 
 function normalizePalette(raw: unknown): Palette | null {
@@ -92,22 +84,55 @@ function normalizePalette(raw: unknown): Palette | null {
   }
 }
 
+function normalizeExtraPaint(raw: unknown): Paint | null {
+  if (!raw || typeof raw !== 'object') return null
+  const item = raw as Partial<Paint>
+  if (typeof item.id !== 'string' || typeof item.original !== 'string' || typeof item.hex !== 'string') {
+    return null
+  }
+  if (!item.names || typeof item.names !== 'object') return null
+  const names = item.names as Record<string, unknown>
+  return {
+    id: item.id,
+    original: item.original,
+    hex: item.hex,
+    kind:
+      item.kind === 'base' ||
+      item.kind === 'layer' ||
+      item.kind === 'shade' ||
+      item.kind === 'contrast' ||
+      item.kind === 'technical'
+        ? item.kind
+        : 'base',
+    metallic: item.metallic === true ? true : undefined,
+    names: {
+      ttc: typeof names.ttc === 'string' ? names.ttc : null,
+      citadel: typeof names.citadel === 'string' ? names.citadel : null,
+      vallejo: typeof names.vallejo === 'string' ? names.vallejo : null,
+      ak: typeof names.ak === 'string' ? names.ak : null,
+    },
+  }
+}
+
 type ImportPayload = {
   v?: number
   owned?: unknown
-  preferredBrand?: unknown
-  preferred_brand?: unknown
   palettes?: unknown
   activePaletteId?: unknown
+  extraPaints?: unknown
 }
 
 export function normalizeState(raw: ImportPayload | null | undefined): SavedState {
   if (!raw || (raw.v !== 1 && raw.v !== 2) || !Array.isArray(raw.owned)) {
-    return { ...DEFAULT_STATE, palettes: [] }
+    return { ...DEFAULT_STATE, palettes: [], extraPaints: [] }
   }
 
   const palettes = Array.isArray(raw.palettes)
     ? raw.palettes.map(normalizePalette).filter((p): p is Palette => p != null)
+    : []
+
+  const extraPaints = Array.isArray(raw.extraPaints)
+    ? raw.extraPaints.map(normalizeExtraPaint).filter((p): p is Paint => p != null)
     : []
 
   const activePaletteId =
@@ -118,9 +143,9 @@ export function normalizeState(raw: ImportPayload | null | undefined): SavedStat
   return {
     v: 2,
     owned: raw.owned.filter((k): k is string => typeof k === 'string'),
-    preferredBrand: normalizeBrand(raw.preferredBrand),
     palettes,
     activePaletteId,
+    extraPaints,
   }
 }
 
@@ -128,30 +153,30 @@ function rowToState(row: InventoryRow): SavedState {
   return normalizeState({
     v: 2,
     owned: Array.isArray(row.owned) ? row.owned : [],
-    preferredBrand: normalizeBrand(row.preferred_brand),
     palettes: Array.isArray(row.palettes) ? (row.palettes as Palette[]) : [],
     activePaletteId: row.active_palette_id ?? null,
+    extraPaints: Array.isArray(row.extra_paints) ? (row.extra_paints as Paint[]) : [],
   })
 }
 
 export function stateFingerprint(state: SavedState): string {
   return JSON.stringify({
-    preferredBrand: state.preferredBrand,
     owned: [...state.owned].sort(),
     activePaletteId: state.activePaletteId,
     palettes: state.palettes
       .map((p) => ({ id: p.id, name: p.name, paintIds: [...p.paintIds].sort() }))
       .sort((a, b) => a.id.localeCompare(b.id)),
+    extraPaints: state.extraPaints.map((p) => p.id).sort(),
   })
 }
 
 export function loadCachedState(): SavedState {
   try {
     const raw = localStorage.getItem(CACHE_KEY) ?? localStorage.getItem(LEGACY_CACHE_KEY)
-    if (!raw) return { ...DEFAULT_STATE, palettes: [] }
-    return normalizeState(JSON.parse(raw) as Partial<SavedState>)
+    if (!raw) return { ...DEFAULT_STATE, palettes: [], extraPaints: [] }
+    return normalizeState(JSON.parse(raw) as ImportPayload)
   } catch {
-    return { ...DEFAULT_STATE, palettes: [] }
+    return { ...DEFAULT_STATE, palettes: [], extraPaints: [] }
   }
 }
 
@@ -162,7 +187,7 @@ export function cacheState(state: SavedState) {
 export async function fetchRemoteState(): Promise<SavedState | null> {
   const { data, error } = await supabase
     .from('paint_inventory')
-    .select('id, owned, preferred_brand, palettes, active_palette_id, updated_at')
+    .select('id, owned, palettes, active_palette_id, extra_paints, updated_at')
     .eq('id', INVENTORY_ID)
     .maybeSingle()
 
@@ -176,9 +201,9 @@ export async function saveRemoteState(state: SavedState): Promise<void> {
     .from('paint_inventory')
     .update({
       owned: state.owned,
-      preferred_brand: state.preferredBrand,
       palettes: state.palettes,
       active_palette_id: state.activePaletteId,
+      extra_paints: state.extraPaints,
       updated_at: new Date().toISOString(),
     })
     .eq('id', INVENTORY_ID)
@@ -192,13 +217,16 @@ export async function hydrateState(): Promise<SavedState> {
   const remote = remoteRaw ? ensurePallidHandsPalette(remoteRaw) : null
 
   if (!remote) {
-    const seed = cached.owned.length > 0 || cached.palettes.length > 0 ? cached : ensurePallidHandsPalette(DEFAULT_STATE)
+    const seed =
+      cached.owned.length > 0 || cached.palettes.length > 0
+        ? cached
+        : ensurePallidHandsPalette(DEFAULT_STATE)
     const { error } = await supabase.from('paint_inventory').upsert({
       id: INVENTORY_ID,
       owned: seed.owned,
-      preferred_brand: seed.preferredBrand,
       palettes: seed.palettes,
       active_palette_id: seed.activePaletteId,
+      extra_paints: seed.extraPaints,
       updated_at: new Date().toISOString(),
     })
     if (error) throw error
@@ -221,34 +249,12 @@ export async function hydrateState(): Promise<SavedState> {
     return merged
   }
 
-  // Persist rename/seed if we had to inject Pallid Hands.
   if (stateFingerprint(remote) !== stateFingerprint(remoteRaw ?? remote)) {
     await saveRemoteState(remote)
   }
 
   cacheState(remote)
   return remote
-}
-
-export function serializeExport(state: SavedState) {
-  return JSON.stringify(
-    {
-      v: 2,
-      owned: state.owned,
-      preferredBrand: state.preferredBrand,
-      palettes: state.palettes,
-    },
-    null,
-    2,
-  )
-}
-
-export function parseImport(text: string): SavedState {
-  const parsed = JSON.parse(text) as ImportPayload
-  if (!parsed || (parsed.v !== 1 && parsed.v !== 2) || !Array.isArray(parsed.owned)) {
-    throw new Error('Formato no válido')
-  }
-  return normalizeState(parsed)
 }
 
 export function newPaletteId() {
