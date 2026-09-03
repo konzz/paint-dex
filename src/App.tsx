@@ -254,9 +254,9 @@ export default function App() {
   function paletteExportText() {
     if (activePalette) {
       const paints = catalog.filter((paint) => activePalette.paintIds.includes(paint.id))
-      return serializePaletteText(activePalette.name, paints)
+      return serializePaletteText(activePalette.name, paints, owned)
     }
-    return serializePaletteText('Todas', catalog)
+    return serializePaletteText('Todas', catalog, owned)
   }
 
   async function copyInventory() {
@@ -292,8 +292,11 @@ export default function App() {
         ...state.extraPaints,
         ...parsed.extraPaints.filter((p) => !knownIds.has(p.id)),
       ]
+      const nextOwned = new Set(state.owned)
+      for (const key of parsed.ownedKeys) nextOwned.add(key)
       persist({
         ...state,
+        owned: [...nextOwned],
         palettes,
         activePaletteId: id,
         extraPaints,
@@ -304,9 +307,10 @@ export default function App() {
       const bits = [`Paleta “${parsed.name}”`]
       if (parsed.matched) bits.push(`${parsed.matched} del catálogo`)
       if (parsed.created) bits.push(`${parsed.created} nuevos`)
+      if (parsed.ownedKeys.length) bits.push(`${parsed.ownedKeys.length} marcados`)
       setFlash(bits.join(' · '))
     } catch {
-      setFlash('Formato inválido. Primera línea = nombre; luego Color: TTC, Citadel, Vallejo, AK')
+      setFlash('Formato inválido. Usa la tabla Uso | TTC | Citadel | Vallejo | AK')
     }
   }
 
@@ -658,9 +662,12 @@ function Toolbar({
 }
 
 const PASTE_EXAMPLE = `Pallid Hands
-Wraithbone: Ivory Tusk, Wraithbone, Pale Sand, Pale Sand
-Leadbelcher: Sir Coates Silver, Leadbelcher, Gunmetal, Gun Metal
-Guilliman Flesh: -, Guilliman Flesh, -, -`
+| Uso | TTC | Citadel | Vallejo | AK |
+| --- | --- | --- | --- | --- |
+| Bronce | **Spartan Bronze** | Balthasar Gold | Bright Bronze | Bronze |
+| Metal | **Sir Coates Silver** | Leadbelcher | Gunmetal | Gun Metal |
+| Wash | **Battle Mud Wash** | Agrax Earthshade | Umber Wash | Dark Brown Wash |
+| Carne | **Elven Skin** | Kislev Flesh | Sunny Skin Tone | Light Flesh |`
 
 function TransferModal({
   mode,
@@ -681,17 +688,17 @@ function TransferModal({
         role="dialog"
         aria-modal="true"
         aria-label={mode === 'copy' ? 'Copiar inventario' : 'Pegar inventario'}
-        className="w-full max-w-lg rounded-2xl border border-line bg-panel p-4 shadow-xl"
+        className="w-full max-w-2xl rounded-2xl border border-line bg-panel p-4 shadow-xl"
       >
         <div className="mb-3 flex items-start justify-between gap-3">
           <div>
             <h2 className="font-display text-2xl text-parchment">
-              {mode === 'copy' ? 'Copia manual' : 'Pegar inventario'}
+              {mode === 'copy' ? 'Copia manual' : 'Pegar paleta'}
             </h2>
             <p className="mt-1 text-sm text-muted">
               {mode === 'copy'
                 ? 'El portapapeles no estaba disponible. Selecciona y copia el texto.'
-                : 'Primera línea = nombre de la paleta. Luego una línea por color: TTC, Citadel, Vallejo, AK. Usa - si no hay equivalente.'}
+                : 'Nombre de paleta + tabla Uso | TTC | Citadel | Vallejo | AK. La **negrita** marca el bote que tienes.'}
             </p>
           </div>
           <button
