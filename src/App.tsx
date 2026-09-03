@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import {
   Check,
   ClipboardCopy,
   ClipboardPaste,
   Minus,
+  Pencil,
   Plus,
   Search,
   Trash2,
@@ -12,11 +13,11 @@ import {
 import {
   BRANDS,
   KIND_LABEL,
-  PAINTS,
   isLightHex,
   paintKey,
   type BrandId,
   type Paint,
+  type PaintKind,
 } from './data/paints'
 import {
   cacheState,
@@ -24,6 +25,7 @@ import {
   fetchRemoteState,
   hydrateState,
   loadCachedState,
+  newPaintId,
   newPaletteId,
   stateFingerprint,
   type SavedState,
@@ -53,10 +55,11 @@ export default function App() {
   const [pasteText, setPasteText] = useState('')
   const [addMode, setAddMode] = useState(false)
   const [paletteDraft, setPaletteDraft] = useState('')
+  const [editingPaint, setEditingPaint] = useState<Paint | 'new' | null>(null)
   const stateRef = useRef(state)
   const saverRef = useRef<ReturnType<typeof createInventorySaver> | null>(null)
   const owned = useMemo(() => new Set(state.owned), [state.owned])
-  const catalog = useMemo(() => [...PAINTS, ...state.extraPaints], [state.extraPaints])
+  const catalog = state.paints
 
   stateRef.current = state
 
@@ -277,7 +280,7 @@ export default function App() {
 
   function applyPaste() {
     try {
-      const parsed = parsePaletteText(pasteText, state.extraPaints)
+      const parsed = parsePaletteText(pasteText, catalog)
       const existing = state.palettes.find(
         (p) => p.name.trim().toLowerCase() === parsed.name.trim().toLowerCase(),
       )
@@ -287,10 +290,10 @@ export default function App() {
             p.id === id ? { ...p, name: parsed.name, paintIds: parsed.paintIds } : p,
           )
         : [...state.palettes, { id, name: parsed.name, paintIds: parsed.paintIds }]
-      const knownIds = new Set([...PAINTS, ...state.extraPaints].map((p) => p.id))
-      const extraPaints = [
-        ...state.extraPaints,
-        ...parsed.extraPaints.filter((p) => !knownIds.has(p.id)),
+      const knownIds = new Set(catalog.map((p) => p.id))
+      const paints = [
+        ...catalog,
+        ...parsed.newPaints.filter((p) => !knownIds.has(p.id)),
       ]
       const nextOwned = new Set(state.owned)
       for (const key of parsed.ownedKeys) nextOwned.add(key)
@@ -299,7 +302,7 @@ export default function App() {
         owned: [...nextOwned],
         palettes,
         activePaletteId: id,
-        extraPaints,
+        paints,
       })
       setAddMode(false)
       setTransfer(null)
@@ -314,9 +317,32 @@ export default function App() {
     }
   }
 
+  function deletePaint(paintId: string) {
+    const paints = state.paints.filter((p) => p.id !== paintId)
+    const palettes = state.palettes.map((p) => ({
+      ...p,
+      paintIds: p.paintIds.filter((id) => id !== paintId),
+    }))
+    const ownedNext = state.owned.filter((key) => !key.startsWith(`${paintId}::`))
+    persist({ ...state, paints, palettes, owned: ownedNext })
+    setFlash('Color eliminado del catálogo')
+  }
+
+  function savePaint(paint: Paint) {
+    const exists = state.paints.some((p) => p.id === paint.id)
+    const paints = exists
+      ? state.paints.map((p) => (p.id === paint.id ? paint : p))
+      : [...state.paints, paint]
+    persist({ ...state, paints })
+    setEditingPaint(null)
+    setFlash(exists ? 'Color actualizado' : 'Color añadido')
+  }
+
   const shoppingPool = palettePaintIds
     ? catalog.filter((paint) => palettePaintIds.has(paint.id))
     : catalog
+
+  const inTodas = activePalette == null
 
   return (
     <div className="min-h-svh bg-desk text-parchment">
@@ -357,6 +383,7 @@ export default function App() {
           onFilter={setFilter}
           onCopy={() => void copyInventory()}
           onPaste={openPaste}
+          onAddPaint={inTodas ? () => setEditingPaint('new') : undefined}
         />
 
         {syncError ? (
@@ -375,6 +402,14 @@ export default function App() {
           <p className="mb-3 text-sm text-muted">
             Añadiendo a <span className="text-brass">{activePalette.name}</span> — pulsa + en un
             color. El inventario (lo tengo / me falta) no cambia.
+          </p>
+        ) : null}
+
+        {inTodas ? (
+          <p className="mb-3 text-sm text-muted">
+            Catálogo completo — puedes <span className="text-brass">añadir</span>,{' '}
+            <span className="text-brass">editar</span> o <span className="text-brass">borrar</span>{' '}
+            colores. Los cambios valen para todas las paletas.
           </p>
         ) : null}
 
@@ -404,6 +439,16 @@ export default function App() {
                       : { kind: 'remove', onClick: removeFromPalette }
                     : null
                 }
+                catalogActions={
+                  inTodas
+                    ? {
+                        onEdit: (paint) => setEditingPaint(paint),
+                        onDelete: (paintId) => {
+                          if (window.confirm('¿Borrar este color del catálogo?')) deletePaint(paintId)
+                        },
+                      }
+                    : null
+                }
               />
             </div>
             <div className="grid gap-3 lg:hidden">
@@ -419,6 +464,18 @@ export default function App() {
                       ? addMode
                         ? { kind: 'add', onClick: () => addToPalette(paint.id) }
                         : { kind: 'remove', onClick: () => removeFromPalette(paint.id) }
+                      : null
+                  }
+                  catalogActions={
+                    inTodas
+                      ? {
+                          onEdit: () => setEditingPaint(paint),
+                          onDelete: () => {
+                            if (window.confirm('¿Borrar este color del catálogo?')) {
+                              deletePaint(paint.id)
+                            }
+                          },
+                        }
                       : null
                   }
                 />
@@ -447,6 +504,14 @@ export default function App() {
           onApplyPaste={applyPaste}
         />
       ) : null}
+
+      {editingPaint ? (
+        <PaintEditorModal
+          initial={editingPaint === 'new' ? null : editingPaint}
+          onClose={() => setEditingPaint(null)}
+          onSave={savePaint}
+        />
+      ) : null}
     </div>
   )
 }
@@ -455,6 +520,11 @@ type PaletteAction =
   | { kind: 'add'; onClick: (paintId: string) => void }
   | { kind: 'remove'; onClick: (paintId: string) => void }
   | null
+
+type CatalogActions = {
+  onEdit: (paint: Paint) => void
+  onDelete: (paintId: string) => void
+} | null
 
 function Stats({
   owned,
@@ -598,6 +668,7 @@ function Toolbar({
   onFilter,
   onCopy,
   onPaste,
+  onAddPaint,
 }: {
   query: string
   onQuery: (value: string) => void
@@ -605,6 +676,7 @@ function Toolbar({
   onFilter: (value: FilterId) => void
   onCopy: () => void
   onPaste: () => void
+  onAddPaint?: () => void
 }) {
   return (
     <div className="mb-5 flex flex-col gap-3">
@@ -639,6 +711,16 @@ function Toolbar({
           ))}
         </div>
         <div className="flex gap-2">
+          {onAddPaint ? (
+            <button
+              type="button"
+              onClick={onAddPaint}
+              className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-xl bg-brass px-3 py-2 text-sm font-medium text-desk md:flex-none"
+            >
+              <Plus className="size-4" />
+              Nuevo color
+            </button>
+          ) : null}
           <button
             type="button"
             onClick={onCopy}
@@ -759,6 +841,183 @@ function TransferModal({
   )
 }
 
+const KIND_OPTIONS = Object.entries(KIND_LABEL) as Array<[PaintKind, string]>
+
+function PaintEditorModal({
+  initial,
+  onClose,
+  onSave,
+}: {
+  initial: Paint | null
+  onClose: () => void
+  onSave: (paint: Paint) => void
+}) {
+  const [original, setOriginal] = useState(initial?.original ?? '')
+  const [hex, setHex] = useState(initial?.hex ?? '#8A8580')
+  const [kind, setKind] = useState<PaintKind>(initial?.kind ?? 'base')
+  const [metallic, setMetallic] = useState(initial?.metallic === true)
+  const [names, setNames] = useState<Record<BrandId, string>>({
+    ttc: initial?.names.ttc ?? '',
+    citadel: initial?.names.citadel ?? '',
+    vallejo: initial?.names.vallejo ?? '',
+    ak: initial?.names.ak ?? '',
+  })
+  const [error, setError] = useState<string | null>(null)
+
+  function submit(event: FormEvent) {
+    event.preventDefault()
+    const label = original.trim()
+    if (!label) {
+      setError('Pon un nombre de uso')
+      return
+    }
+    const normalizedHex = hex.trim().startsWith('#') ? hex.trim() : `#${hex.trim()}`
+    if (!/^#[0-9a-fA-F]{6}$/.test(normalizedHex)) {
+      setError('Hex inválido (ej. #E6D4B3)')
+      return
+    }
+    const paint: Paint = {
+      id: initial?.id ?? newPaintId(label),
+      original: label,
+      hex: normalizedHex.toUpperCase(),
+      kind,
+      metallic: metallic ? true : undefined,
+      names: {
+        ttc: names.ttc.trim() || null,
+        citadel: names.citadel.trim() || null,
+        vallejo: names.vallejo.trim() || null,
+        ak: names.ak.trim() || null,
+      },
+    }
+    onSave(paint)
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/60 p-4 sm:items-center">
+      <form
+        role="dialog"
+        aria-modal="true"
+        aria-label={initial ? 'Editar color' : 'Nuevo color'}
+        onSubmit={submit}
+        className="w-full max-w-lg rounded-2xl border border-line bg-panel p-4 shadow-xl"
+      >
+        <div className="mb-4 flex items-start justify-between gap-3">
+          <div>
+            <h2 className="font-display text-2xl text-parchment">
+              {initial ? 'Editar color' : 'Nuevo color'}
+            </h2>
+            <p className="mt-1 text-sm text-muted">
+              Nombre de uso, tono y equivalencias por marca. Vacío = sin equivalente.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-lg p-1.5 text-muted hover:bg-panel-2 hover:text-parchment"
+            aria-label="Cerrar"
+          >
+            <X className="size-5" />
+          </button>
+        </div>
+
+        <div className="grid gap-3 sm:grid-cols-[auto_1fr]">
+          <label className="flex flex-col gap-1 text-xs text-muted">
+            Muestra
+            <span className="relative size-14 overflow-hidden rounded-xl border border-line">
+              <span className="absolute inset-0" style={{ backgroundColor: hex }} />
+              <input
+                type="color"
+                value={/^#[0-9a-fA-F]{6}$/.test(hex) ? hex : '#8A8580'}
+                onChange={(event) => setHex(event.target.value.toUpperCase())}
+                className="absolute inset-0 cursor-pointer opacity-0"
+                aria-label="Elegir color"
+              />
+            </span>
+          </label>
+          <div className="grid gap-3">
+            <label className="flex flex-col gap-1 text-xs text-muted">
+              Uso / nombre
+              <input
+                value={original}
+                onChange={(event) => setOriginal(event.target.value)}
+                placeholder="p. ej. Carne clara"
+                className="rounded-xl border border-line bg-panel-2 px-3 py-2 text-sm text-parchment outline-none focus:border-brass"
+                autoFocus
+              />
+            </label>
+            <div className="grid grid-cols-2 gap-3">
+              <label className="flex flex-col gap-1 text-xs text-muted">
+                Hex
+                <input
+                  value={hex}
+                  onChange={(event) => setHex(event.target.value)}
+                  placeholder="#E6D4B3"
+                  className="rounded-xl border border-line bg-panel-2 px-3 py-2 font-mono text-sm text-parchment outline-none focus:border-brass"
+                />
+              </label>
+              <label className="flex flex-col gap-1 text-xs text-muted">
+                Tipo
+                <select
+                  value={kind}
+                  onChange={(event) => setKind(event.target.value as PaintKind)}
+                  className="rounded-xl border border-line bg-panel-2 px-3 py-2 text-sm text-parchment outline-none focus:border-brass"
+                >
+                  {KIND_OPTIONS.map(([id, label]) => (
+                    <option key={id} value={id}>
+                      {label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+          </div>
+        </div>
+
+        <label className="mt-3 flex items-center gap-2 text-sm text-muted">
+          <input
+            type="checkbox"
+            checked={metallic}
+            onChange={(event) => setMetallic(event.target.checked)}
+            className="size-4 rounded border-line"
+          />
+          Metálico
+        </label>
+
+        <div className="mt-4 grid gap-2 sm:grid-cols-2">
+          {BRANDS.map((brand) => (
+            <label key={brand.id} className="flex flex-col gap-1 text-xs text-muted">
+              {brand.label}
+              <input
+                value={names[brand.id]}
+                onChange={(event) =>
+                  setNames((prev) => ({ ...prev, [brand.id]: event.target.value }))
+                }
+                placeholder="Equivalente…"
+                className="rounded-xl border border-line bg-panel-2 px-3 py-2 text-sm text-parchment outline-none focus:border-brass"
+              />
+            </label>
+          ))}
+        </div>
+
+        {error ? <p className="mt-3 text-sm text-red-300">{error}</p> : null}
+
+        <div className="mt-4 flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-lg border border-line px-3 py-2 text-sm text-muted hover:text-parchment"
+          >
+            Cancelar
+          </button>
+          <button type="submit" className="rounded-lg bg-brass px-3 py-2 text-sm font-medium text-desk">
+            Guardar
+          </button>
+        </div>
+      </form>
+    </div>
+  )
+}
+
 
 function PaintTable({
   paints,
@@ -766,12 +1025,14 @@ function PaintTable({
   onToggleBrand,
   onToggleRow,
   paletteAction,
+  catalogActions,
 }: {
   paints: Paint[]
   owned: Set<string>
   onToggleBrand: (paint: Paint, brand: BrandId) => void
   onToggleRow: (paint: Paint) => void
   paletteAction: PaletteAction
+  catalogActions: CatalogActions
 }) {
   return (
     <div className="overflow-hidden rounded-2xl border border-line bg-panel">
@@ -785,6 +1046,7 @@ function PaintTable({
               </th>
             ))}
             {paletteAction ? <th className="px-3 py-3 font-medium">Paleta</th> : null}
+            {catalogActions ? <th className="px-3 py-3 font-medium">Catálogo</th> : null}
           </tr>
         </thead>
         <tbody>
@@ -813,6 +1075,30 @@ function PaintTable({
                     <PaletteActionButton action={paletteAction} paintId={paint.id} />
                   </td>
                 ) : null}
+                {catalogActions ? (
+                  <td className="px-3 py-2 align-middle">
+                    <div className="flex gap-1">
+                      <button
+                        type="button"
+                        onClick={() => catalogActions.onEdit(paint)}
+                        className="rounded-lg border border-line p-1.5 text-muted hover:text-parchment"
+                        title="Editar color"
+                        aria-label={`Editar ${paint.original}`}
+                      >
+                        <Pencil className="size-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => catalogActions.onDelete(paint.id)}
+                        className="rounded-lg border border-line p-1.5 text-muted hover:border-red-500/40 hover:text-red-300"
+                        title="Borrar color"
+                        aria-label={`Borrar ${paint.original}`}
+                      >
+                        <Trash2 className="size-3.5" />
+                      </button>
+                    </div>
+                  </td>
+                ) : null}
               </tr>
             )
           })}
@@ -829,12 +1115,14 @@ function PaintCard({
   onToggleBrand,
   onToggleRow,
   paletteAction,
+  catalogActions,
 }: {
   paint: Paint
   owned: Set<string>
   onToggleBrand: (paint: Paint, brand: BrandId) => void
   onToggleRow: (paint: Paint) => void
   paletteAction: { kind: 'add' | 'remove'; onClick: () => void } | null
+  catalogActions: { onEdit: () => void; onDelete: () => void } | null
 }) {
   const got = ownsPaint(owned, paint)
   const brands = ownedBrands(owned, paint)
@@ -842,20 +1130,44 @@ function PaintCard({
     <article className={`rounded-2xl border p-4 ${got ? 'border-owned/50 bg-owned/10' : 'border-line bg-panel'}`}>
       <div className="flex items-start justify-between gap-2">
         <RowIdentity paint={paint} owned={got} onToggle={() => onToggleRow(paint)} />
-        {paletteAction ? (
-          <button
-            type="button"
-            onClick={paletteAction.onClick}
-            className={`inline-flex shrink-0 items-center gap-1 rounded-lg border px-2 py-1 text-xs ${
-              paletteAction.kind === 'add'
-                ? 'border-brass/40 text-brass hover:bg-brass/15'
-                : 'border-line text-muted hover:text-parchment'
-            }`}
-          >
-            {paletteAction.kind === 'add' ? <Plus className="size-3.5" /> : <Minus className="size-3.5" />}
-            {paletteAction.kind === 'add' ? 'Añadir' : 'Quitar'}
-          </button>
-        ) : null}
+        <div className="flex shrink-0 gap-1">
+          {catalogActions ? (
+            <>
+              <button
+                type="button"
+                onClick={catalogActions.onEdit}
+                className="rounded-lg border border-line p-1.5 text-muted hover:text-parchment"
+                title="Editar color"
+                aria-label={`Editar ${paint.original}`}
+              >
+                <Pencil className="size-3.5" />
+              </button>
+              <button
+                type="button"
+                onClick={catalogActions.onDelete}
+                className="rounded-lg border border-line p-1.5 text-muted hover:border-red-500/40 hover:text-red-300"
+                title="Borrar color"
+                aria-label={`Borrar ${paint.original}`}
+              >
+                <Trash2 className="size-3.5" />
+              </button>
+            </>
+          ) : null}
+          {paletteAction ? (
+            <button
+              type="button"
+              onClick={paletteAction.onClick}
+              className={`inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-xs ${
+                paletteAction.kind === 'add'
+                  ? 'border-brass/40 text-brass hover:bg-brass/15'
+                  : 'border-line text-muted hover:text-parchment'
+              }`}
+            >
+              {paletteAction.kind === 'add' ? <Plus className="size-3.5" /> : <Minus className="size-3.5" />}
+              {paletteAction.kind === 'add' ? 'Añadir' : 'Quitar'}
+            </button>
+          ) : null}
+        </div>
       </div>
       {got && brands.length === 0 ? (
         <p className="mt-2 text-xs text-owned">Marcado como lo tienes, sin marca concreta.</p>

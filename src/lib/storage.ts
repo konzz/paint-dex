@@ -2,13 +2,111 @@ import { PAINTS, type Paint } from '../data/paints'
 import { INVENTORY_ID, supabase } from './supabase'
 
 const PALLID_HANDS_ID = 'pal_pallid_hands'
+const CACHE_KEY = 'mini-paint-tracker:v2'
+const LEGACY_CACHE_KEY = 'mini-paint-tracker:v1'
+const SAVE_DEBOUNCE_MS = 450
 
-/** Ensure the catalog palette exists as “Pallid Hands”; keep “Todas” as the null tab. */
-export function ensurePallidHandsPalette(state: SavedState): SavedState {
+export type Palette = {
+  id: string
+  name: string
+  paintIds: string[]
+}
+
+export type SavedState = {
+  v: 2
+  owned: string[]
+  palettes: Palette[]
+  activePaletteId: string | null
+  paints: Paint[]
+}
+
+export const DEFAULT_STATE: SavedState = {
+  v: 2,
+  owned: [],
+  palettes: [],
+  activePaletteId: null,
+  paints: [],
+}
+
+type InventoryRow = {
+  id: string
+  owned: string[] | null
+  palettes?: unknown
+  active_palette_id?: string | null
+  paints?: unknown
+  extra_paints?: unknown
+  updated_at?: string
+}
+
+export function normalizePaint(raw: unknown): Paint | null {
+  if (!raw || typeof raw !== 'object') return null
+  const item = raw as Partial<Paint>
+  if (typeof item.id !== 'string' || typeof item.original !== 'string') return null
+  if (!item.names || typeof item.names !== 'object') return null
+  const names = item.names as Record<string, unknown>
+  const hex = typeof item.hex === 'string' && /^#[0-9a-fA-F]{6}$/.test(item.hex) ? item.hex : '#8A8580'
+  return {
+    id: item.id,
+    original: item.original.trim() || 'Color',
+    hex,
+    kind:
+      item.kind === 'base' ||
+      item.kind === 'layer' ||
+      item.kind === 'shade' ||
+      item.kind === 'contrast' ||
+      item.kind === 'technical'
+        ? item.kind
+        : 'base',
+    metallic: item.metallic === true ? true : undefined,
+    names: {
+      ttc: typeof names.ttc === 'string' && names.ttc.trim() ? names.ttc.trim() : null,
+      citadel: typeof names.citadel === 'string' && names.citadel.trim() ? names.citadel.trim() : null,
+      vallejo: typeof names.vallejo === 'string' && names.vallejo.trim() ? names.vallejo.trim() : null,
+      ak: typeof names.ak === 'string' && names.ak.trim() ? names.ak.trim() : null,
+    },
+  }
+}
+
+function normalizePalette(raw: unknown): Palette | null {
+  if (!raw || typeof raw !== 'object') return null
+  const item = raw as Partial<Palette>
+  if (typeof item.id !== 'string' || typeof item.name !== 'string' || !Array.isArray(item.paintIds)) {
+    return null
+  }
+  return {
+    id: item.id,
+    name: item.name.trim() || 'Paleta',
+    paintIds: item.paintIds.filter((id): id is string => typeof id === 'string'),
+  }
+}
+
+function mergePaints(base: Paint[], extras: Paint[]) {
+  const byId = new Map<string, Paint>()
+  for (const paint of base) byId.set(paint.id, paint)
+  for (const paint of extras) {
+    if (!byId.has(paint.id)) byId.set(paint.id, paint)
+  }
+  return [...byId.values()]
+}
+
+/** Seed catalog from built-in PAINTS + any legacy extras; keep “Todas” as null tab. */
+export function ensureCatalog(state: SavedState, legacyExtra: Paint[] = []): SavedState {
+  const paints =
+    state.paints.length > 0
+      ? mergePaints(state.paints, legacyExtra)
+      : mergePaints(PAINTS, legacyExtra)
+
+  const withPaints = { ...state, paints }
+  return ensurePallidHandsPalette(withPaints)
+}
+
+function ensurePallidHandsPalette(state: SavedState): SavedState {
+  const allIds = state.paints.map((p) => p.id)
+
   if (state.palettes.length === 0) {
     return {
       ...state,
-      palettes: [{ id: PALLID_HANDS_ID, name: 'Pallid Hands', paintIds: PAINTS.map((p) => p.id) }],
+      palettes: [{ id: PALLID_HANDS_ID, name: 'Pallid Hands', paintIds: allIds }],
       activePaletteId: PALLID_HANDS_ID,
     }
   }
@@ -27,7 +125,7 @@ export function ensurePallidHandsPalette(state: SavedState): SavedState {
     return {
       ...state,
       palettes: [
-        { id: PALLID_HANDS_ID, name: 'Pallid Hands', paintIds: PAINTS.map((p) => p.id) },
+        { id: PALLID_HANDS_ID, name: 'Pallid Hands', paintIds: allIds },
         ...state.palettes,
       ],
     }
@@ -36,103 +134,30 @@ export function ensurePallidHandsPalette(state: SavedState): SavedState {
   return state
 }
 
-const CACHE_KEY = 'mini-paint-tracker:v2'
-const LEGACY_CACHE_KEY = 'mini-paint-tracker:v1'
-const SAVE_DEBOUNCE_MS = 450
-
-export type Palette = {
-  id: string
-  name: string
-  paintIds: string[]
-}
-
-export type SavedState = {
-  v: 2
-  owned: string[]
-  palettes: Palette[]
-  activePaletteId: string | null
-  extraPaints: Paint[]
-}
-
-export const DEFAULT_STATE: SavedState = {
-  v: 2,
-  owned: [],
-  palettes: [],
-  activePaletteId: null,
-  extraPaints: [],
-}
-
-type InventoryRow = {
-  id: string
-  owned: string[] | null
-  palettes?: unknown
-  active_palette_id?: string | null
-  extra_paints?: unknown
-  updated_at?: string
-}
-
-function normalizePalette(raw: unknown): Palette | null {
-  if (!raw || typeof raw !== 'object') return null
-  const item = raw as Partial<Palette>
-  if (typeof item.id !== 'string' || typeof item.name !== 'string' || !Array.isArray(item.paintIds)) {
-    return null
-  }
-  return {
-    id: item.id,
-    name: item.name.trim() || 'Paleta',
-    paintIds: item.paintIds.filter((id): id is string => typeof id === 'string'),
-  }
-}
-
-function normalizeExtraPaint(raw: unknown): Paint | null {
-  if (!raw || typeof raw !== 'object') return null
-  const item = raw as Partial<Paint>
-  if (typeof item.id !== 'string' || typeof item.original !== 'string' || typeof item.hex !== 'string') {
-    return null
-  }
-  if (!item.names || typeof item.names !== 'object') return null
-  const names = item.names as Record<string, unknown>
-  return {
-    id: item.id,
-    original: item.original,
-    hex: item.hex,
-    kind:
-      item.kind === 'base' ||
-      item.kind === 'layer' ||
-      item.kind === 'shade' ||
-      item.kind === 'contrast' ||
-      item.kind === 'technical'
-        ? item.kind
-        : 'base',
-    metallic: item.metallic === true ? true : undefined,
-    names: {
-      ttc: typeof names.ttc === 'string' ? names.ttc : null,
-      citadel: typeof names.citadel === 'string' ? names.citadel : null,
-      vallejo: typeof names.vallejo === 'string' ? names.vallejo : null,
-      ak: typeof names.ak === 'string' ? names.ak : null,
-    },
-  }
-}
-
 type ImportPayload = {
   v?: number
   owned?: unknown
   palettes?: unknown
   activePaletteId?: unknown
+  paints?: unknown
   extraPaints?: unknown
 }
 
 export function normalizeState(raw: ImportPayload | null | undefined): SavedState {
   if (!raw || (raw.v !== 1 && raw.v !== 2) || !Array.isArray(raw.owned)) {
-    return { ...DEFAULT_STATE, palettes: [], extraPaints: [] }
+    return { ...DEFAULT_STATE }
   }
 
   const palettes = Array.isArray(raw.palettes)
     ? raw.palettes.map(normalizePalette).filter((p): p is Palette => p != null)
     : []
 
-  const extraPaints = Array.isArray(raw.extraPaints)
-    ? raw.extraPaints.map(normalizeExtraPaint).filter((p): p is Paint => p != null)
+  const paints = Array.isArray(raw.paints)
+    ? raw.paints.map(normalizePaint).filter((p): p is Paint => p != null)
+    : []
+
+  const legacyExtra = Array.isArray(raw.extraPaints)
+    ? raw.extraPaints.map(normalizePaint).filter((p): p is Paint => p != null)
     : []
 
   const activePaletteId =
@@ -140,22 +165,26 @@ export function normalizeState(raw: ImportPayload | null | undefined): SavedStat
       ? raw.activePaletteId
       : null
 
-  return {
-    v: 2,
-    owned: raw.owned.filter((k): k is string => typeof k === 'string'),
-    palettes,
-    activePaletteId,
-    extraPaints,
-  }
+  return ensureCatalog(
+    {
+      v: 2,
+      owned: raw.owned.filter((k): k is string => typeof k === 'string'),
+      palettes,
+      activePaletteId,
+      paints,
+    },
+    legacyExtra,
+  )
 }
 
 function rowToState(row: InventoryRow): SavedState {
   return normalizeState({
     v: 2,
     owned: Array.isArray(row.owned) ? row.owned : [],
-    palettes: Array.isArray(row.palettes) ? (row.palettes as Palette[]) : [],
+    palettes: Array.isArray(row.palettes) ? row.palettes : [],
     activePaletteId: row.active_palette_id ?? null,
-    extraPaints: Array.isArray(row.extra_paints) ? (row.extra_paints as Paint[]) : [],
+    paints: Array.isArray(row.paints) ? row.paints : [],
+    extraPaints: Array.isArray(row.extra_paints) ? row.extra_paints : [],
   })
 }
 
@@ -166,17 +195,23 @@ export function stateFingerprint(state: SavedState): string {
     palettes: state.palettes
       .map((p) => ({ id: p.id, name: p.name, paintIds: [...p.paintIds].sort() }))
       .sort((a, b) => a.id.localeCompare(b.id)),
-    extraPaints: state.extraPaints.map((p) => p.id).sort(),
+    paints: state.paints.map((p) => ({
+      id: p.id,
+      original: p.original,
+      hex: p.hex,
+      kind: p.kind,
+      names: p.names,
+    })),
   })
 }
 
 export function loadCachedState(): SavedState {
   try {
     const raw = localStorage.getItem(CACHE_KEY) ?? localStorage.getItem(LEGACY_CACHE_KEY)
-    if (!raw) return { ...DEFAULT_STATE, palettes: [], extraPaints: [] }
+    if (!raw) return ensureCatalog(DEFAULT_STATE)
     return normalizeState(JSON.parse(raw) as ImportPayload)
   } catch {
-    return { ...DEFAULT_STATE, palettes: [], extraPaints: [] }
+    return ensureCatalog(DEFAULT_STATE)
   }
 }
 
@@ -187,7 +222,7 @@ export function cacheState(state: SavedState) {
 export async function fetchRemoteState(): Promise<SavedState | null> {
   const { data, error } = await supabase
     .from('paint_inventory')
-    .select('id, owned, palettes, active_palette_id, extra_paints, updated_at')
+    .select('id, owned, palettes, active_palette_id, paints, extra_paints, updated_at')
     .eq('id', INVENTORY_ID)
     .maybeSingle()
 
@@ -203,30 +238,31 @@ export async function saveRemoteState(state: SavedState): Promise<void> {
       owned: state.owned,
       palettes: state.palettes,
       active_palette_id: state.activePaletteId,
-      extra_paints: state.extraPaints,
+      paints: state.paints,
+      extra_paints: [],
       updated_at: new Date().toISOString(),
     })
     .eq('id', INVENTORY_ID)
   if (error) throw error
 }
 
-/** Load remote inventory; if empty and local cache has data, push the cache up once. */
 export async function hydrateState(): Promise<SavedState> {
-  const cached = ensurePallidHandsPalette(loadCachedState())
+  const cached = loadCachedState()
   const remoteRaw = await fetchRemoteState()
-  const remote = remoteRaw ? ensurePallidHandsPalette(remoteRaw) : null
+  const remote = remoteRaw
 
   if (!remote) {
     const seed =
-      cached.owned.length > 0 || cached.palettes.length > 0
+      cached.owned.length > 0 || cached.palettes.length > 0 || cached.paints.length > 0
         ? cached
-        : ensurePallidHandsPalette(DEFAULT_STATE)
+        : ensureCatalog(DEFAULT_STATE)
     const { error } = await supabase.from('paint_inventory').upsert({
       id: INVENTORY_ID,
       owned: seed.owned,
       palettes: seed.palettes,
       active_palette_id: seed.activePaletteId,
-      extra_paints: seed.extraPaints,
+      paints: seed.paints,
+      extra_paints: [],
       updated_at: new Date().toISOString(),
     })
     if (error) throw error
@@ -238,18 +274,20 @@ export async function hydrateState(): Promise<SavedState> {
     remoteRaw &&
     remoteRaw.owned.length === 0 &&
     remoteRaw.palettes.length === 0 &&
-    (cached.owned.length > 0 || cached.palettes.length > 0)
+    remoteRaw.paints.length <= PAINTS.length &&
+    (cached.owned.length > 0 || cached.paints.length > PAINTS.length)
   ) {
-    const merged = ensurePallidHandsPalette({
+    const merged = ensureCatalog({
       ...cached,
       owned: cached.owned.length > 0 ? cached.owned : remote.owned,
+      paints: cached.paints.length > 0 ? cached.paints : remote.paints,
     })
     await saveRemoteState(merged)
     cacheState(merged)
     return merged
   }
 
-  if (stateFingerprint(remote) !== stateFingerprint(remoteRaw ?? remote)) {
+  if (stateFingerprint(remote) !== stateFingerprint(remoteRaw)) {
     await saveRemoteState(remote)
   }
 
@@ -261,12 +299,21 @@ export function newPaletteId() {
   return `pal_${crypto.randomUUID().slice(0, 8)}`
 }
 
+export function newPaintId(label = 'color') {
+  const slug = label
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '') || 'color'
+  return `paint_${slug}_${crypto.randomUUID().slice(0, 6)}`
+}
+
 type SaveHandlers = {
   onError?: (message: string) => void
   onSuccess?: () => void
 }
 
-/** Coalesced remote saver: at most one timer + one in-flight request. */
 export function createInventorySaver(handlers: SaveHandlers = {}) {
   let lastSyncedFp = ''
   let pending: SavedState | null = null

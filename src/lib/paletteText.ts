@@ -1,6 +1,5 @@
 import {
   BRANDS,
-  PAINTS,
   paintKey,
   type BrandId,
   type Paint,
@@ -162,7 +161,7 @@ export function serializePaletteText(
 export type ParsedPaletteText = {
   name: string
   paintIds: string[]
-  extraPaints: Paint[]
+  newPaints: Paint[]
   ownedKeys: string[]
   matched: number
   created: number
@@ -170,12 +169,11 @@ export type ParsedPaletteText = {
 
 function parseLegacyColonFormat(
   lines: string[],
-  existingExtra: Paint[],
+  catalog: Paint[],
 ): ParsedPaletteText {
   const name = lines[0]
-  const catalog = [...PAINTS, ...existingExtra]
   const paintIds: string[] = []
-  const extraPaints: Paint[] = []
+  const newPaints: Paint[] = []
   const seen = new Set<string>()
   let matched = 0
   let created = 0
@@ -194,7 +192,7 @@ function parseLegacyColonFormat(
     const candidates = [primary, slots.ttc, slots.citadel, slots.vallejo, slots.ak].filter(
       (v): v is string => Boolean(v),
     )
-    const existing = findPaint([...catalog, ...extraPaints], candidates)
+    const existing = findPaint([...catalog, ...newPaints], candidates)
     if (existing) {
       if (!seen.has(existing.id)) {
         seen.add(existing.id)
@@ -203,8 +201,8 @@ function parseLegacyColonFormat(
       }
       continue
     }
-    const id = `custom_${slugify(primary)}_${extraPaints.length + existingExtra.length}`
-    extraPaints.push({
+    const id = `custom_${slugify(primary)}_${newPaints.length}`
+    newPaints.push({
       id,
       original: primary,
       hex: '#8A8580',
@@ -217,7 +215,7 @@ function parseLegacyColonFormat(
   }
 
   if (paintIds.length === 0) throw new Error('No hay colores en la paleta')
-  return { name, paintIds, extraPaints, ownedKeys: [], matched, created }
+  return { name, paintIds, newPaints, ownedKeys: [], matched, created }
 }
 
 /**
@@ -232,7 +230,7 @@ function parseLegacyColonFormat(
  */
 export function parsePaletteText(
   text: string,
-  existingExtra: Paint[] = [],
+  catalog: Paint[] = [],
 ): ParsedPaletteText {
   const rawLines = text
     .replace(/^\uFEFF/, '')
@@ -244,7 +242,7 @@ export function parsePaletteText(
 
   const tableLineIdx = nonEmpty.findIndex((line) => line.includes('|'))
   if (tableLineIdx < 0) {
-    return parseLegacyColonFormat(nonEmpty, existingExtra)
+    return parseLegacyColonFormat(nonEmpty, catalog)
   }
 
   const beforeTable = nonEmpty.slice(0, tableLineIdx)
@@ -257,9 +255,8 @@ export function parsePaletteText(
     throw new Error('La tabla necesita columnas Uso, TTC, Citadel, Vallejo y AK')
   }
 
-  const catalog = [...PAINTS, ...existingExtra]
   const paintIds: string[] = []
-  const extraPaints: Paint[] = []
+  const newPaints: Paint[] = []
   const ownedKeys: string[] = []
   const seen = new Set<string>()
   let matched = 0
@@ -290,9 +287,9 @@ export function parsePaletteText(
     const candidates = [uso, slots.ttc, slots.citadel, slots.vallejo, slots.ak].filter(
       (v): v is string => Boolean(v),
     )
-    let paint = findPaint([...catalog, ...extraPaints], candidates)
+    let paint = findPaint([...catalog, ...newPaints], candidates)
     if (!paint) {
-      const id = `custom_${slugify(uso)}_${extraPaints.length + existingExtra.length}`
+      const id = `custom_${slugify(uso)}_${newPaints.length}`
       paint = {
         id,
         original: uso,
@@ -300,7 +297,7 @@ export function parsePaletteText(
         kind: 'base' satisfies PaintKind,
         names: slots,
       }
-      extraPaints.push(paint)
+      newPaints.push(paint)
       created += 1
     } else {
       matched += 1
@@ -326,7 +323,6 @@ export function parsePaletteText(
     }
     if (!marked) {
       const filled = (['ttc', 'citadel', 'vallejo', 'ak'] as const).filter((brand) => slots[brand])
-      // One brand only, or paste lost `**` → first filled brand is the bottle you use.
       if (filled.length === 1 || (!tableHasBold && filled.length > 0)) {
         ownedKeys.push(paintKey(paint.id, filled[0]))
       }
@@ -334,5 +330,5 @@ export function parsePaletteText(
   }
 
   if (paintIds.length === 0) throw new Error('No hay colores en la paleta')
-  return { name, paintIds, extraPaints, ownedKeys, matched, created }
+  return { name, paintIds, newPaints, ownedKeys, matched, created }
 }
